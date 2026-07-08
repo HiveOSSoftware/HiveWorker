@@ -1,0 +1,43 @@
+name: Release HiveWorker
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Release Binaries
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24.x"
+
+      - name: Build Linux AMD64
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o dist/hiveworker_linux_amd64 ./cmd/daemon
+
+      - name: Build Linux ARM64
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o dist/hiveworker_linux_arm64 ./cmd/daemon
+
+      - name: Make binaries executable
+        run: |
+          chmod +x dist/hiveworker_linux_amd64
+          chmod +x dist/hiveworker_linux_arm64
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: |
+            dist/hiveworker_linux_amd64
+            dist/hiveworker_linux_arm64
