@@ -1,0 +1,18 @@
+listen_address: ":8080"
+api_token: "change-me"
+
+paths:
+  data: "./data"
+  instances: "./instances"
+  backups: "./backups"
+
+runtime:
+  type: "docker"
+  
+docker:
+  network: "hivepanel"
+
+allocations:
+  ip: "0.0.0.0"
+  port_start: 25565
+  port_end: 25600

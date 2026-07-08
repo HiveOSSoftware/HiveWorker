@@ -1,0 +1,47 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Go
+bin/
+dist/
+coverage.out
+
+# IDE
+.vscode/
+.idea/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Runtime configuration
+config.yaml
+
+# Runtime data
+data/cells/*
+!data/cells/.gitkeep
+
+instances/*
+!instances/.gitkeep
+
+backups/*
+!backups/.gitkeep
+
+# Logs
+*.log
+
+# Temporary
+tmp/
+temp/
+
+# Environment
+.env
+.env.*
+
+# Test artifacts
+*.test

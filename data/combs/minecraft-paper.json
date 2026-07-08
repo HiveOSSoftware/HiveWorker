@@ -1,0 +1,56 @@
+{
+  "id": "minecraft-paper",
+  "name": "Minecraft Paper",
+  "game": "minecraft",
+
+  "image": "hivepanel/java:25",
+  "working_dir": "/home/container",
+  "entrypoint": [],
+  "environment": {
+    "TZ": "UTC"
+  },
+  "mounts": [
+    {
+      "source": "instance",
+      "target": "/home/container"
+    }
+  ],
+
+  "startup": "java -Xms{{memory}}M -Xmx{{memory}}M -jar server.jar nogui",
+
+  "variables": {
+    "memory": "1024",
+    "version": "1.21.11"
+  },
+
+  "install": [
+    {
+      "type": "http",
+      "with": {
+        "url": "https://fill.papermc.io/v3/projects/paper/versions/{{version}}/builds"
+      },
+      "save": "paper_builds"
+    },
+    {
+      "type": "download",
+      "with": {
+        "url": "{{paper_builds.0.downloads.server:default.url}}",
+        "target": "server.jar"
+      }
+    },
+    {
+      "type": "write_file",
+      "with": {
+        "target": "eula.txt",
+        "content": "eula=true\n"
+      }
+    },
+    {
+      "type": "write_file",
+      "with": {
+        "target": "server.properties",
+        "content": "server-port={{allocation.port}}\nonline-mode=true\nmotd=HivePanel Server\n"
+      }
+    }
+  ]
+}

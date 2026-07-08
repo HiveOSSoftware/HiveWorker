@@ -1,0 +1,11 @@
+{
+  "id": "minecraft-vanilla",
+  "name": "Minecraft Vanilla",
+  "game": "minecraft",
+  "startup": "java -Xms{{memory}}M -Xmx{{memory}}M -jar server.jar nogui",
+  "variables": {
+    "memory": "1024",
+    "version": "1.21.6"
+  },
+  "install": []
+}
