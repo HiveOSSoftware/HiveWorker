@@ -14,6 +14,7 @@ import (
 	hiveruntime "hivepanel-worker/internal/runtime"
 	dockerruntime "hivepanel-worker/internal/runtime/docker"
 	processruntime "hivepanel-worker/internal/runtime/process"
+	workersftp "hivepanel-worker/internal/sftp"
 )
 
 func main() {
@@ -41,6 +42,7 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
+
 		workerRuntime = dockerRuntime
 
 	default:
@@ -68,10 +70,53 @@ func main() {
 
 	panel.StartHeartbeat(cfg)
 
-	router := api.NewRouter(cfg, cellManager, combManager)
+	if cfg.SFTP.Enabled {
+		authClient := panel.NewSFTPAuthClient(cfg)
+		handlerFactory := workersftp.NewJailHandlerFactory()
 
-	log.Println("HivePanel Worker running on " + cfg.Worker.Listen)
-	log.Println("Config loaded from " + cfg.ConfigPath)
+		sftpServer, err := workersftp.NewServer(
+			cfg,
+			authClient,
+			handlerFactory,
+		)
+		if err != nil {
+			log.Fatal("failed to initialise SFTP server: ", err)
+		}
 
-	log.Fatal(http.ListenAndServe(cfg.Worker.Listen, router))
+		go func() {
+			log.Println(
+				"HivePanel SFTP server running on " +
+					cfg.SFTP.Listen,
+			)
+
+			if err := sftpServer.ListenAndServe(); err != nil {
+				log.Fatal("SFTP server stopped: ", err)
+			}
+		}()
+	} else {
+		log.Println("HivePanel SFTP server is disabled")
+	}
+
+	router := api.NewRouter(
+		cfg,
+		cellManager,
+		combManager,
+	)
+
+	log.Println(
+		"HivePanel Worker running on " +
+			cfg.Worker.Listen,
+	)
+
+	log.Println(
+		"Config loaded from " +
+			cfg.ConfigPath,
+	)
+
+	log.Fatal(
+		http.ListenAndServe(
+			cfg.Worker.Listen,
+			router,
+		),
+	)
 }
