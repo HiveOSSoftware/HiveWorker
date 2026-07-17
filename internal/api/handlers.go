@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -385,17 +386,51 @@ func (h *Handler) ListFiles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	entries, err := files.List(gameServer.Dir, path)
+	page := parsePositiveInt(
+		r.URL.Query().Get("page"),
+		1,
+	)
+
+	perPage := parsePositiveInt(
+		r.URL.Query().Get("per_page"),
+		files.DefaultPageSize,
+	)
+
+	if perPage > files.MaxPageSize {
+		perPage = files.MaxPageSize
+	}
+
+	result, err := files.List(
+		gameServer.Dir,
+		path,
+		page,
+		perPage,
+	)
+
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	writeJSON(w, map[string]any{
-		"id":    id,
-		"path":  path,
-		"files": entries,
+		"id":         id,
+		"path":       result.Path,
+		"files":      result.Files,
+		"pagination": result.Pagination,
 	})
+}
+
+func parsePositiveInt(value string, fallback int) int {
+	if value == "" {
+		return fallback
+	}
+
+	number, err := strconv.Atoi(value)
+	if err != nil || number < 1 {
+		return fallback
+	}
+
+	return number
 }
 
 func (h *Handler) ReadFile(w http.ResponseWriter, r *http.Request) {

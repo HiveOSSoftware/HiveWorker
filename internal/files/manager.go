@@ -6,68 +6,224 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 )
 
+const (
+	recycleBinName = ".recycle_bin"
+
+	DefaultPageSize = 250
+	MaxPageSize     = 500
+)
+
 type FileEntry struct {
-	Name  string `json:"name"`
-	Path  string `json:"path"`
-	IsDir bool   `json:"is_dir"`
-	Size  int64  `json:"size"`
+	Name       string `json:"name"`
+	Path       string `json:"path"`
+	IsDir      bool   `json:"is_dir"`
+	Size       int64  `json:"size"`
+	ModifiedAt string `json:"modified_at,omitempty"`
 }
 
-const recycleBinName = ".recycle_bin"
+type Pagination struct {
+	Page       int `json:"page"`
+	PerPage    int `json:"per_page"`
+	Total      int `json:"total"`
+	TotalPages int `json:"total_pages"`
+	From       int `json:"from"`
+	To         int `json:"to"`
+}
+
+type ListResponse struct {
+	Path       string      `json:"path"`
+	Files      []FileEntry `json:"files"`
+	Pagination Pagination  `json:"pagination"`
+}
 
 func SafePath(baseDir string, requestedPath string) (string, error) {
+	absBase, err := filepath.Abs(baseDir)
+	if err != nil {
+		return "", err
+	}
+
 	cleanPath := filepath.Clean(requestedPath)
 
 	if cleanPath == "." {
 		cleanPath = ""
 	}
 
-	fullPath := filepath.Join(baseDir, cleanPath)
-	absBase, _ := filepath.Abs(baseDir)
-	absFull, _ := filepath.Abs(fullPath)
+	fullPath := filepath.Join(absBase, cleanPath)
 
-	if !strings.HasPrefix(absFull, absBase) {
+	absFull, err := filepath.Abs(fullPath)
+	if err != nil {
+		return "", err
+	}
+
+	/*
+		filepath.Rel is safer than checking strings.HasPrefix.
+
+		For example, a prefix check could incorrectly consider:
+
+			/srv/cells/example-two
+
+		to be inside:
+
+			/srv/cells/example
+	*/
+	relativePath, err := filepath.Rel(absBase, absFull)
+	if err != nil {
+		return "", err
+	}
+
+	if relativePath == ".." ||
+		strings.HasPrefix(relativePath, ".."+string(filepath.Separator)) {
 		return "", errors.New("invalid path")
 	}
 
 	return absFull, nil
 }
 
-func List(baseDir string, requestedPath string) ([]FileEntry, error) {
+func List(
+	baseDir string,
+	requestedPath string,
+	page int,
+	perPage int,
+) (*ListResponse, error) {
+	if page < 1 {
+		page = 1
+	}
+
+	if perPage < 1 {
+		perPage = DefaultPageSize
+	}
+
+	if perPage > MaxPageSize {
+		perPage = MaxPageSize
+	}
+
 	fullPath, err := SafePath(baseDir, requestedPath)
 	if err != nil {
 		return nil, err
 	}
 
-	entries, err := os.ReadDir(fullPath)
+	directoryInfo, err := os.Stat(fullPath)
 	if err != nil {
 		return nil, err
 	}
 
-	result := make([]FileEntry, 0)
+	if !directoryInfo.IsDir() {
+		return nil, errors.New("path is not a directory")
+	}
 
-	for _, entry := range entries {
+	directoryEntries, err := os.ReadDir(fullPath)
+	if err != nil {
+		return nil, err
+	}
+
+	/*
+		Sorting must happen before pagination so that page results remain
+		stable between requests.
+
+		Directories are displayed before regular files, then entries are
+		sorted alphabetically without case sensitivity.
+	*/
+	sort.SliceStable(directoryEntries, func(i int, j int) bool {
+		left := directoryEntries[i]
+		right := directoryEntries[j]
+
+		if left.IsDir() != right.IsDir() {
+			return left.IsDir()
+		}
+
+		leftName := strings.ToLower(left.Name())
+		rightName := strings.ToLower(right.Name())
+
+		if leftName == rightName {
+			return left.Name() < right.Name()
+		}
+
+		return leftName < rightName
+	})
+
+	total := len(directoryEntries)
+
+	totalPages := 1
+
+	if total > 0 {
+		totalPages = (total + perPage - 1) / perPage
+	}
+
+	if page > totalPages {
+		page = totalPages
+	}
+
+	start := (page - 1) * perPage
+	end := start + perPage
+
+	if start > total {
+		start = total
+	}
+
+	if end > total {
+		end = total
+	}
+
+	result := make([]FileEntry, 0, end-start)
+
+	for _, entry := range directoryEntries[start:end] {
 		info, err := entry.Info()
 		if err != nil {
+			/*
+				The entry may have been removed between os.ReadDir and
+				entry.Info. Skip it rather than failing the entire list.
+			*/
 			continue
 		}
 
-		relativePath := filepath.Join(requestedPath, entry.Name())
+		relativePath := filepath.Join(
+			requestedPath,
+			entry.Name(),
+		)
 
 		result = append(result, FileEntry{
-			Name:  entry.Name(),
-			Path:  filepath.ToSlash(relativePath),
-			IsDir: entry.IsDir(),
-			Size:  info.Size(),
+			Name:       entry.Name(),
+			Path:       filepath.ToSlash(relativePath),
+			IsDir:      entry.IsDir(),
+			Size:       info.Size(),
+			ModifiedAt: info.ModTime().UTC().Format(time.RFC3339),
 		})
 	}
 
-	return result, nil
+	from := 0
+	to := 0
+
+	if total > 0 {
+		from = start + 1
+		to = end
+	}
+
+	cleanRequestedPath := filepath.ToSlash(
+		filepath.Clean(requestedPath),
+	)
+
+	if cleanRequestedPath == "." {
+		cleanRequestedPath = ""
+	}
+
+	return &ListResponse{
+		Path:  cleanRequestedPath,
+		Files: result,
+		Pagination: Pagination{
+			Page:       page,
+			PerPage:    perPage,
+			Total:      total,
+			TotalPages: totalPages,
+			From:       from,
+			To:         to,
+		},
+	}, nil
 }
 
 func Read(baseDir string, requestedPath string) (string, error) {
@@ -94,7 +250,11 @@ func Write(baseDir string, requestedPath string, content string) error {
 		return err
 	}
 
-	return os.WriteFile(fullPath, []byte(content), 0644)
+	return os.WriteFile(
+		fullPath,
+		[]byte(content),
+		0644,
+	)
 }
 
 func Delete(baseDir string, requestedPath string) error {
@@ -115,7 +275,11 @@ func CreateFolder(baseDir string, requestedPath string) error {
 	return os.MkdirAll(fullPath, 0755)
 }
 
-func Rename(baseDir string, oldPath string, newPath string) error {
+func Rename(
+	baseDir string,
+	oldPath string,
+	newPath string,
+) error {
 	oldFullPath, err := SafePath(baseDir, oldPath)
 	if err != nil {
 		return err
@@ -126,15 +290,27 @@ func Rename(baseDir string, oldPath string, newPath string) error {
 		return err
 	}
 
-	return os.Rename(oldFullPath, newFullPath)
+	if err := EnsureParentDir(newFullPath); err != nil {
+		return err
+	}
+
+	return os.Rename(
+		oldFullPath,
+		newFullPath,
+	)
 }
 
 func EnsureParentDir(path string) error {
 	parent := filepath.Dir(path)
+
 	return os.MkdirAll(parent, 0755)
 }
 
-func WriteBytes(baseDir string, requestedPath string, data []byte) error {
+func WriteBytes(
+	baseDir string,
+	requestedPath string,
+	data []byte,
+) error {
 	fullPath, err := SafePath(baseDir, requestedPath)
 	if err != nil {
 		return err
@@ -144,10 +320,17 @@ func WriteBytes(baseDir string, requestedPath string, data []byte) error {
 		return err
 	}
 
-	return os.WriteFile(fullPath, data, 0644)
+	return os.WriteFile(
+		fullPath,
+		data,
+		0644,
+	)
 }
 
-func DownloadPath(baseDir string, requestedPath string) (string, error) {
+func DownloadPath(
+	baseDir string,
+	requestedPath string,
+) (string, error) {
 	fullPath, err := SafePath(baseDir, requestedPath)
 	if err != nil {
 		return "", err
@@ -171,25 +354,47 @@ func MoveToRecycleBin(root string, path string) error {
 		return err
 	}
 
-	if cleanPath == recycleBinName || strings.HasPrefix(cleanPath, recycleBinName+"/") {
-		return errors.New("cannot move recycle bin contents to recycle bin")
+	if cleanPath == recycleBinName ||
+		strings.HasPrefix(cleanPath, recycleBinName+"/") {
+		return errors.New(
+			"cannot move recycle bin contents to recycle bin",
+		)
 	}
 
-	source := filepath.Join(root, filepath.FromSlash(cleanPath))
+	source, err := SafePath(root, cleanPath)
+	if err != nil {
+		return err
+	}
 
 	if _, err := os.Stat(source); err != nil {
 		return err
 	}
 
-	targetRelative := filepath.ToSlash(filepath.Join(recycleBinName, cleanPath))
-	target := filepath.Join(root, filepath.FromSlash(targetRelative))
-	target = uniqueRecyclePath(target)
+	targetRelative := filepath.ToSlash(
+		filepath.Join(
+			recycleBinName,
+			cleanPath,
+		),
+	)
 
-	if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+	target, err := SafePath(root, targetRelative)
+	if err != nil {
 		return err
 	}
 
-	return os.Rename(source, target)
+	target = uniqueRecyclePath(target)
+
+	if err := os.MkdirAll(
+		filepath.Dir(target),
+		0755,
+	); err != nil {
+		return err
+	}
+
+	return os.Rename(
+		source,
+		target,
+	)
 }
 
 func RestoreFromRecycleBin(root string, path string) error {
@@ -198,7 +403,8 @@ func RestoreFromRecycleBin(root string, path string) error {
 		return err
 	}
 
-	if cleanPath != recycleBinName && !strings.HasPrefix(cleanPath, recycleBinName+"/") {
+	if cleanPath != recycleBinName &&
+		!strings.HasPrefix(cleanPath, recycleBinName+"/") {
 		return errors.New("path is not inside recycle bin")
 	}
 
@@ -206,40 +412,70 @@ func RestoreFromRecycleBin(root string, path string) error {
 		return errors.New("cannot restore recycle bin itself")
 	}
 
-	source := filepath.Join(root, filepath.FromSlash(cleanPath))
-
-	restoreRelative := strings.TrimPrefix(cleanPath, recycleBinName+"/")
-	target := filepath.Join(root, filepath.FromSlash(restoreRelative))
-	target = uniqueRecyclePath(target)
-
-	if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+	source, err := SafePath(root, cleanPath)
+	if err != nil {
 		return err
 	}
 
-	return os.Rename(source, target)
+	restoreRelative := strings.TrimPrefix(
+		cleanPath,
+		recycleBinName+"/",
+	)
+
+	target, err := SafePath(root, restoreRelative)
+	if err != nil {
+		return err
+	}
+
+	target = uniqueRecyclePath(target)
+
+	if err := os.MkdirAll(
+		filepath.Dir(target),
+		0755,
+	); err != nil {
+		return err
+	}
+
+	return os.Rename(
+		source,
+		target,
+	)
 }
 
-func PermanentDeleteFromRecycleBin(root string, path string) error {
+func PermanentDeleteFromRecycleBin(
+	root string,
+	path string,
+) error {
 	cleanPath, err := safeRelativePath(path)
 	if err != nil {
 		return err
 	}
 
-	if cleanPath != recycleBinName && !strings.HasPrefix(cleanPath, recycleBinName+"/") {
-		return errors.New("permanent delete is only allowed inside recycle bin")
+	if cleanPath != recycleBinName &&
+		!strings.HasPrefix(cleanPath, recycleBinName+"/") {
+		return errors.New(
+			"permanent delete is only allowed inside recycle bin",
+		)
 	}
 
 	if cleanPath == recycleBinName {
-		return errors.New("cannot permanently delete recycle bin itself")
+		return errors.New(
+			"cannot permanently delete recycle bin itself",
+		)
 	}
 
-	target := filepath.Join(root, filepath.FromSlash(cleanPath))
+	target, err := SafePath(root, cleanPath)
+	if err != nil {
+		return err
+	}
 
 	return os.RemoveAll(target)
 }
 
 func safeRelativePath(path string) (string, error) {
-	clean := filepath.ToSlash(filepath.Clean(path))
+	clean := filepath.ToSlash(
+		filepath.Clean(path),
+	)
 
 	if clean == "." {
 		return "", errors.New("path is required")
@@ -251,7 +487,9 @@ func safeRelativePath(path string) (string, error) {
 		return "", errors.New("path is required")
 	}
 
-	if strings.HasPrefix(clean, "../") || clean == ".." || strings.Contains(clean, "/../") {
+	if strings.HasPrefix(clean, "../") ||
+		clean == ".." ||
+		strings.Contains(clean, "/../") {
 		return "", errors.New("invalid path")
 	}
 
@@ -263,19 +501,36 @@ func uniqueRecyclePath(path string) string {
 		return path
 	}
 
-	dir := filepath.Dir(path)
-	ext := filepath.Ext(path)
-	name := strings.TrimSuffix(filepath.Base(path), ext)
-	stamp := time.Now().Format("2006-01-02 15-04-05")
+	directory := filepath.Dir(path)
+	extension := filepath.Ext(path)
+	name := strings.TrimSuffix(
+		filepath.Base(path),
+		extension,
+	)
 
-	candidate := filepath.Join(dir, name+" (deleted "+stamp+")"+ext)
+	stamp := time.Now().Format(
+		"2006-01-02 15-04-05",
+	)
+
+	candidate := filepath.Join(
+		directory,
+		name+" (deleted "+stamp+")"+extension,
+	)
 
 	if _, err := os.Stat(candidate); os.IsNotExist(err) {
 		return candidate
 	}
 
-	for i := 2; ; i++ {
-		candidate = filepath.Join(dir, name+" (deleted "+stamp+") "+strconv.Itoa(i)+ext)
+	for index := 2; ; index++ {
+		candidate = filepath.Join(
+			directory,
+			name+
+				" (deleted "+
+				stamp+
+				") "+
+				strconv.Itoa(index)+
+				extension,
+		)
 
 		if _, err := os.Stat(candidate); os.IsNotExist(err) {
 			return candidate
@@ -283,7 +538,10 @@ func uniqueRecyclePath(path string) string {
 	}
 }
 
-func CreateFile(baseDir string, requestedPath string) error {
+func CreateFile(
+	baseDir string,
+	requestedPath string,
+) error {
 	fullPath, err := SafePath(baseDir, requestedPath)
 	if err != nil {
 		return err
@@ -291,13 +549,20 @@ func CreateFile(baseDir string, requestedPath string) error {
 
 	if _, err := os.Stat(fullPath); err == nil {
 		return errors.New("file already exists")
+	} else if !os.IsNotExist(err) {
+		return err
 	}
 
 	if err := EnsureParentDir(fullPath); err != nil {
 		return err
 	}
 
-	file, err := os.OpenFile(fullPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
+	file, err := os.OpenFile(
+		fullPath,
+		os.O_CREATE|os.O_EXCL|os.O_WRONLY,
+		0644,
+	)
+
 	if err != nil {
 		return err
 	}
@@ -305,7 +570,11 @@ func CreateFile(baseDir string, requestedPath string) error {
 	return file.Close()
 }
 
-func UploadFromURL(baseDir string, requestedPath string, url string) error {
+func UploadFromURL(
+	baseDir string,
+	requestedPath string,
+	url string,
+) error {
 	if url == "" {
 		return errors.New("url is required")
 	}
@@ -323,22 +592,34 @@ func UploadFromURL(baseDir string, requestedPath string, url string) error {
 		Timeout: 10 * time.Minute,
 	}
 
-	resp, err := client.Get(url)
+	response, err := client.Get(url)
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+	defer response.Body.Close()
+
+	if response.StatusCode < 200 ||
+		response.StatusCode >= 300 {
 		return errors.New("failed to download url")
 	}
 
-	out, err := os.OpenFile(fullPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
+	output, err := os.OpenFile(
+		fullPath,
+		os.O_CREATE|os.O_TRUNC|os.O_WRONLY,
+		0644,
+	)
+
 	if err != nil {
 		return err
 	}
-	defer out.Close()
 
-	_, err = io.Copy(out, resp.Body)
+	defer output.Close()
+
+	_, err = io.Copy(
+		output,
+		response.Body,
+	)
+
 	return err
 }
