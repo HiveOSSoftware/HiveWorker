@@ -51,6 +51,17 @@ func main() {
 
 	backupManager := backup.NewManager(cfg.Paths.Backups)
 
+	backupMountService, err := backup.NewMountService(
+		cfg.Paths.Backups,
+		cfg.Paths.BackupMounts,
+	)
+	if err != nil {
+		log.Fatal(
+			"failed to initialise backup mount service: ",
+			err,
+		)
+	}
+
 	cellManager := cell.NewManager(
 		cfg.Paths.Data,
 		cfg.Paths.Instances,
@@ -101,6 +112,7 @@ func main() {
 		cfg,
 		cellManager,
 		combManager,
+		backupMountService,
 	)
 
 	log.Println(

@@ -4,18 +4,20 @@ import (
 	"net/http"
 
 	"hivepanel-worker/internal/auth"
+	"hivepanel-worker/internal/backup"
 	"hivepanel-worker/internal/cell"
 	"hivepanel-worker/internal/comb"
 	"hivepanel-worker/internal/config"
 )
 
-func NewRouter(cfg config.Config, manager *cell.Manager, combManager *comb.Manager) http.Handler {
+func NewRouter(cfg config.Config, manager *cell.Manager, combManager *comb.Manager, backupMounts *backup.MountService) http.Handler {
 	mux := http.NewServeMux()
 
 	handler := &Handler{
-		Config:      cfg,
-		Manager:     manager,
-		CombManager: combManager,
+		Config:       cfg,
+		Manager:      manager,
+		CombManager:  combManager,
+		BackupMounts: backupMounts,
 	}
 
 	mux.HandleFunc("GET /health", handler.Health)
@@ -42,14 +44,17 @@ func NewRouter(cfg config.Config, manager *cell.Manager, combManager *comb.Manag
 
 	mux.Handle("POST /cells/{id}/backups", auth.Middleware(cfg, http.HandlerFunc(handler.CreateBackup)))
 	mux.Handle("GET /cells/{id}/backups", auth.Middleware(cfg, http.HandlerFunc(handler.ListBackups)))
+	mux.Handle("POST /cells/{id}/backups/mount", auth.Middleware(cfg, http.HandlerFunc(handler.MountBackup)))
+	mux.Handle("DELETE /cells/{id}/backups/mount", auth.Middleware(cfg, http.HandlerFunc(handler.UnmountBackup)))
+	mux.Handle("GET /cells/{id}/backups/mount", auth.Middleware(cfg, http.HandlerFunc(handler.ListMountedBackupFiles)))
 
 	mux.Handle("GET /cells/{id}/backups/files", auth.Middleware(cfg, http.HandlerFunc(handler.ListBackupFiles)))
 	mux.Handle("GET /cells/{id}/backups/files/read", auth.Middleware(cfg, http.HandlerFunc(handler.ReadBackupFile)))
 	mux.Handle("POST /cells/{id}/backups/files/extract", auth.Middleware(cfg, http.HandlerFunc(handler.ExtractBackupFile)))
 
-	mux.Handle("GET /cells/{id}/backups/{name}/download", auth.Middleware(cfg, http.HandlerFunc(handler.DownloadBackup)))
-	mux.Handle("DELETE /cells/{id}/backups/{name}", auth.Middleware(cfg, http.HandlerFunc(handler.DeleteBackup)))
-	mux.Handle("POST /cells/{id}/backups/{name}/restore", auth.Middleware(cfg, http.HandlerFunc(handler.RestoreBackup)))
+	mux.Handle("GET /cells/{id}/backups/{backupID}/download", auth.Middleware(cfg, http.HandlerFunc(handler.DownloadBackup)))
+	mux.Handle("DELETE /cells/{id}/backups/{backupID}", auth.Middleware(cfg, http.HandlerFunc(handler.DeleteBackup)))
+	mux.Handle("POST /cells/{id}/backups/{backupID}/restore", auth.Middleware(cfg, http.HandlerFunc(handler.RestoreBackup)))
 
 	mux.Handle("GET /cells/{id}/files", auth.Middleware(cfg, http.HandlerFunc(handler.ListFiles)))
 	mux.Handle("GET /cells/{id}/files/read", auth.Middleware(cfg, http.HandlerFunc(handler.ReadFile)))

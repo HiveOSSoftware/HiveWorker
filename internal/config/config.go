@@ -61,9 +61,10 @@ type NodeConfig struct {
 }
 
 type Paths struct {
-	Data      string `yaml:"data"`
-	Instances string `yaml:"instances"`
-	Backups   string `yaml:"backups"`
+	Data         string `yaml:"data"`
+	Instances    string `yaml:"instances"`
+	Backups      string `yaml:"backups"`
+	BackupMounts string `yaml:"backup_mounts"`
 }
 
 type Runtime struct {
@@ -145,9 +146,10 @@ func Default() Config {
 		Node: NodeConfig{},
 
 		Paths: Paths{
-			Data:      "./data",
-			Instances: "./instances",
-			Backups:   "./backups",
+			Data:         "./data",
+			Instances:    "./instances",
+			Backups:      "./backups",
+			BackupMounts: "./backup_mounts",
 		},
 
 		Runtime: Runtime{

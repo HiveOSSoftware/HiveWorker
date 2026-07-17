@@ -14,6 +14,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"hivepanel-worker/internal/backup"
 	"hivepanel-worker/internal/cell"
 	"hivepanel-worker/internal/comb"
 	"hivepanel-worker/internal/config"
@@ -24,9 +25,10 @@ import (
 )
 
 type Handler struct {
-	Config      config.Config
-	Manager     *cell.Manager
-	CombManager *comb.Manager
+	Config       config.Config
+	Manager      *cell.Manager
+	CombManager  *comb.Manager
+	BackupMounts *backup.MountService
 }
 
 type CommandRequest struct {
@@ -1036,36 +1038,74 @@ func (h *Handler) GetComb(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, comb)
 }
 
-func (h *Handler) CreateBackup(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
+type createBackupRequest struct {
+	BackupID     string   `json:"backup_id"`
+	Name         string   `json:"name"`
+	IgnoredFiles []string `json:"ignored_files"`
+}
 
-	if invalidCellID(id) {
+func (h *Handler) CreateBackup(w http.ResponseWriter, r *http.Request) {
+	cellID := r.PathValue("id")
+
+	if invalidCellID(cellID) {
 		http.Error(w, "invalid cell id", http.StatusBadRequest)
 		return
 	}
 
-	if !h.ensureBackupsAllowed(w, id) {
+	if !h.ensureBackupsAllowed(w, cellID) {
 		return
 	}
 
-	backup, err := h.Manager.CreateBackup(id)
+	var request createBackupRequest
+
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	request.BackupID = strings.TrimSpace(request.BackupID)
+	request.Name = strings.TrimSpace(request.Name)
+
+	if request.BackupID == "" {
+		http.Error(w, "backup_id is required", http.StatusBadRequest)
+		return
+	}
+
+	if request.Name == "" {
+		request.Name = request.BackupID
+	}
+
+	createdBackup, err := h.Manager.CreateBackup(
+		cellID,
+		request.BackupID,
+		request.Name,
+		request.IgnoredFiles,
+	)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	writeJSON(w, backup)
+	writeJSONStatus(
+		w,
+		http.StatusCreated,
+		createdBackup,
+	)
 }
 
 func (h *Handler) ListBackups(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
+	cellID := r.PathValue("id")
 
-	if invalidCellID(id) {
+	if invalidCellID(cellID) {
 		http.Error(w, "invalid cell id", http.StatusBadRequest)
 		return
 	}
 
-	backups, err := h.Manager.ListBackups(id)
+	if !h.ensureBackupsAllowed(w, cellID) {
+		return
+	}
+
+	backups, err := h.Manager.ListBackups(cellID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -1075,89 +1115,131 @@ func (h *Handler) ListBackups(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) DeleteBackup(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	name := r.PathValue("name")
+	cellID := r.PathValue("id")
+	backupID := strings.TrimSpace(r.PathValue("backupID"))
 
-	if invalidCellID(id) {
+	if invalidCellID(cellID) {
 		http.Error(w, "invalid cell id", http.StatusBadRequest)
 		return
 	}
 
-	if !h.ensureBackupsAllowed(w, id) {
+	if !h.ensureBackupsAllowed(w, cellID) {
 		return
 	}
 
-	if err := h.Manager.DeleteBackup(id, name); err != nil {
+	if backupID == "" {
+		http.Error(w, "backup id is required", http.StatusBadRequest)
+		return
+	}
+
+	if err := h.Manager.DeleteBackup(cellID, backupID); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	writeJSON(w, map[string]any{
-		"message": "backup deleted",
-		"id":      id,
-		"name":    name,
+		"message":   "backup deleted",
+		"id":        cellID,
+		"backup_id": backupID,
 	})
 }
 
-func (h *Handler) DownloadBackup(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	name := r.PathValue("name")
+func (h *Handler) DownloadBackup(
+	w http.ResponseWriter,
+	r *http.Request,
+) {
+	cellID := r.PathValue("id")
+	backupID := strings.TrimSpace(r.PathValue("backupID"))
 
-	if invalidCellID(id) {
+	if invalidCellID(cellID) {
 		http.Error(w, "invalid cell id", http.StatusBadRequest)
 		return
 	}
 
-	path, err := h.Manager.BackupDownloadPath(id, name)
+	if !h.ensureBackupsAllowed(w, cellID) {
+		return
+	}
+
+	if backupID == "" {
+		http.Error(w, "backup id is required", http.StatusBadRequest)
+		return
+	}
+
+	path, err := h.Manager.BackupDownloadPath(
+		cellID,
+		backupID,
+	)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	w.Header().Set("Content-Disposition", "attachment; filename=\""+filepath.Base(path)+"\"")
+	w.Header().Set("Content-Type", "application/gzip")
+	w.Header().Set(
+		"Content-Disposition",
+		`attachment; filename="`+filepath.Base(path)+`"`,
+	)
+
 	http.ServeFile(w, r, path)
 }
 
 func (h *Handler) RestoreBackup(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	name := r.PathValue("name")
+	cellID := r.PathValue("id")
+	backupID := strings.TrimSpace(r.PathValue("backupID"))
 
-	if invalidCellID(id) {
+	if invalidCellID(cellID) {
 		http.Error(w, "invalid cell id", http.StatusBadRequest)
 		return
 	}
 
-	if !h.ensureBackupsAllowed(w, id) {
+	if !h.ensureBackupsAllowed(w, cellID) {
 		return
 	}
 
-	if err := h.Manager.RestoreBackup(id, name); err != nil {
+	if backupID == "" {
+		http.Error(w, "backup id is required", http.StatusBadRequest)
+		return
+	}
+
+	if err := h.Manager.RestoreBackup(cellID, backupID); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	writeJSON(w, map[string]any{
-		"message": "backup restored",
-		"id":      id,
-		"name":    name,
+		"message":   "backup restored",
+		"id":        cellID,
+		"backup_id": backupID,
 	})
 }
 
-func (h *Handler) ListBackupFiles(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	name := r.URL.Query().Get("name")
+func (h *Handler) ListBackupFiles(
+	w http.ResponseWriter,
+	r *http.Request,
+) {
+	cellID := r.PathValue("id")
+	backupID := strings.TrimSpace(
+		r.URL.Query().Get("backup_id"),
+	)
 
-	if invalidCellID(id) {
+	if invalidCellID(cellID) {
 		http.Error(w, "invalid cell id", http.StatusBadRequest)
 		return
 	}
 
-	if name == "" {
-		http.Error(w, "backup name is required", http.StatusBadRequest)
+	if !h.ensureBackupsAllowed(w, cellID) {
 		return
 	}
 
-	backupFiles, err := h.Manager.ListBackupFiles(id, name)
+	if backupID == "" {
+		http.Error(w, "backup_id is required", http.StatusBadRequest)
+		return
+	}
+
+	backupFiles, err := h.Manager.ListBackupFiles(
+		cellID,
+		backupID,
+	)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -1166,18 +1248,29 @@ func (h *Handler) ListBackupFiles(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, backupFiles)
 }
 
-func (h *Handler) ReadBackupFile(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	name := r.URL.Query().Get("name")
-	path := r.URL.Query().Get("path")
+func (h *Handler) ReadBackupFile(
+	w http.ResponseWriter,
+	r *http.Request,
+) {
+	cellID := r.PathValue("id")
+	backupID := strings.TrimSpace(
+		r.URL.Query().Get("backup_id"),
+	)
+	path := strings.TrimSpace(
+		r.URL.Query().Get("path"),
+	)
 
-	if invalidCellID(id) {
+	if invalidCellID(cellID) {
 		http.Error(w, "invalid cell id", http.StatusBadRequest)
 		return
 	}
 
-	if name == "" {
-		http.Error(w, "backup name is required", http.StatusBadRequest)
+	if !h.ensureBackupsAllowed(w, cellID) {
+		return
+	}
+
+	if backupID == "" {
+		http.Error(w, "backup_id is required", http.StatusBadRequest)
 		return
 	}
 
@@ -1186,33 +1279,43 @@ func (h *Handler) ReadBackupFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	content, err := h.Manager.ReadBackupFile(id, name, path)
+	content, err := h.Manager.ReadBackupFile(
+		cellID,
+		backupID,
+		path,
+	)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	writeJSON(w, map[string]any{
-		"path":    path,
-		"content": content,
+		"backup_id": backupID,
+		"path":      path,
+		"content":   content,
 	})
 }
 
-func (h *Handler) ExtractBackupFile(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	name := r.URL.Query().Get("name")
+func (h *Handler) ExtractBackupFile(
+	w http.ResponseWriter,
+	r *http.Request,
+) {
+	cellID := r.PathValue("id")
+	backupID := strings.TrimSpace(
+		r.URL.Query().Get("backup_id"),
+	)
 
-	if invalidCellID(id) {
+	if invalidCellID(cellID) {
 		http.Error(w, "invalid cell id", http.StatusBadRequest)
 		return
 	}
 
-	if !h.ensureBackupsAllowed(w, id) {
+	if !h.ensureBackupsAllowed(w, cellID) {
 		return
 	}
 
-	if name == "" {
-		http.Error(w, "backup name is required", http.StatusBadRequest)
+	if backupID == "" {
+		http.Error(w, "backup_id is required", http.StatusBadRequest)
 		return
 	}
 
@@ -1223,19 +1326,26 @@ func (h *Handler) ExtractBackupFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	request.Path = strings.TrimSpace(request.Path)
+
 	if request.Path == "" {
 		http.Error(w, "path is required", http.StatusBadRequest)
 		return
 	}
 
-	if err := h.Manager.ExtractBackupPath(id, name, request.Path); err != nil {
+	if err := h.Manager.ExtractBackupPath(
+		cellID,
+		backupID,
+		request.Path,
+	); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	writeJSON(w, map[string]any{
-		"message": "backup path extracted",
-		"path":    request.Path,
+		"message":   "backup path extracted",
+		"backup_id": backupID,
+		"path":      request.Path,
 	})
 }
 
@@ -1789,6 +1899,16 @@ func (h *Handler) waitForCellStopped(id string, timeout time.Duration) error {
 
 func writeJSON(w http.ResponseWriter, data any) {
 	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(data)
+}
+
+func writeJSONStatus(
+	w http.ResponseWriter,
+	status int,
+	data any,
+) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(data)
 }
 

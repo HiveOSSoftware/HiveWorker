@@ -2,127 +2,139 @@ package cell
 
 import "errors"
 
-func (m *Manager) CreateBackup(id string) (any, error) {
-	m.mutex.Lock()
-
-	cell, exists := m.cells[id]
+func (m *Manager) CreateBackup(
+	id string,
+	backupID string,
+	name string,
+	ignoredFiles []string,
+) (any, error) {
+	cell, exists := m.getCellForBackup(id)
 	if !exists {
-		m.mutex.Unlock()
 		return nil, errors.New("cell not found")
 	}
 
-	dir := cell.Dir
-	m.mutex.Unlock()
-
-	return m.backupManager.Create(id, dir)
+	return m.backupManager.Create(
+		id,
+		backupID,
+		name,
+		cell.Dir,
+		ignoredFiles,
+	)
 }
 
 func (m *Manager) ListBackups(id string) (any, error) {
-	m.mutex.Lock()
-
-	_, exists := m.cells[id]
-	if !exists {
-		m.mutex.Unlock()
+	if _, exists := m.getCellForBackup(id); !exists {
 		return nil, errors.New("cell not found")
 	}
-
-	m.mutex.Unlock()
 
 	return m.backupManager.List(id)
 }
 
-func (m *Manager) DeleteBackup(id string, name string) error {
-	m.mutex.Lock()
-
-	_, exists := m.cells[id]
-	if !exists {
-		m.mutex.Unlock()
+func (m *Manager) DeleteBackup(
+	id string,
+	backupID string,
+) error {
+	if _, exists := m.getCellForBackup(id); !exists {
 		return errors.New("cell not found")
 	}
 
-	m.mutex.Unlock()
-
-	return m.backupManager.Delete(id, name)
+	return m.backupManager.Delete(id, backupID)
 }
 
-func (m *Manager) BackupDownloadPath(id string, name string) (string, error) {
-	m.mutex.Lock()
-
-	_, exists := m.cells[id]
-	if !exists {
-		m.mutex.Unlock()
+func (m *Manager) BackupDownloadPath(
+	id string,
+	backupID string,
+) (string, error) {
+	if _, exists := m.getCellForBackup(id); !exists {
 		return "", errors.New("cell not found")
 	}
 
-	m.mutex.Unlock()
-
-	return m.backupManager.DownloadPath(id, name)
+	return m.backupManager.DownloadPath(id, backupID)
 }
 
-func (m *Manager) RestoreBackup(id string, name string) error {
-	m.mutex.Lock()
-
-	cell, exists := m.cells[id]
+func (m *Manager) RestoreBackup(
+	id string,
+	backupID string,
+) error {
+	cell, exists := m.getCellForBackup(id)
 	if !exists {
-		m.mutex.Unlock()
 		return errors.New("cell not found")
 	}
 
 	if m.runtime.IsRunning(id) {
-		m.mutex.Unlock()
-		return errors.New("cell must be stopped before restoring backup")
+		return errors.New(
+			"cell must be stopped before restoring backup",
+		)
 	}
 
-	dir := cell.Dir
-	m.mutex.Unlock()
-
-	return m.backupManager.Restore(id, name, dir)
+	return m.backupManager.Restore(
+		id,
+		backupID,
+		cell.Dir,
+	)
 }
 
-func (m *Manager) ListBackupFiles(id string, name string) (any, error) {
-	m.mutex.Lock()
-
-	_, exists := m.cells[id]
-	if !exists {
-		m.mutex.Unlock()
+func (m *Manager) ListBackupFiles(
+	id string,
+	backupID string,
+) (any, error) {
+	if _, exists := m.getCellForBackup(id); !exists {
 		return nil, errors.New("cell not found")
 	}
 
-	m.mutex.Unlock()
-
-	return m.backupManager.ListFiles(id, name)
+	return m.backupManager.ListFiles(
+		id,
+		backupID,
+	)
 }
 
-func (m *Manager) ReadBackupFile(id string, name string, path string) (string, error) {
-	m.mutex.Lock()
-
-	_, exists := m.cells[id]
-	if !exists {
-		m.mutex.Unlock()
+func (m *Manager) ReadBackupFile(
+	id string,
+	backupID string,
+	path string,
+) (string, error) {
+	if _, exists := m.getCellForBackup(id); !exists {
 		return "", errors.New("cell not found")
 	}
 
-	m.mutex.Unlock()
-
-	return m.backupManager.ReadFile(id, name, path)
+	return m.backupManager.ReadFile(
+		id,
+		backupID,
+		path,
+	)
 }
 
-func (m *Manager) ExtractBackupPath(id string, name string, path string) error {
-	m.mutex.Lock()
-
-	cell, exists := m.cells[id]
+func (m *Manager) ExtractBackupPath(
+	id string,
+	backupID string,
+	path string,
+) error {
+	cell, exists := m.getCellForBackup(id)
 	if !exists {
-		m.mutex.Unlock()
 		return errors.New("cell not found")
 	}
 
 	if m.runtime.IsRunning(id) {
-		m.mutex.Unlock()
-		return errors.New("cell must be stopped before extracting from backup")
+		return errors.New(
+			"cell must be stopped before extracting from backup",
+		)
 	}
 
-	dir := cell.Dir
-	m.mutex.Unlock()
+	return m.backupManager.ExtractPath(
+		id,
+		backupID,
+		path,
+		cell.Dir,
+	)
+}
 
-	return m.backupManager.ExtractPath(id, name, path, dir)
+func (m *Manager) getCellForBackup(
+	id string,
+) (*Cell, bool) {
+	m.mutex.RLock()
+	defer m.mutex.RUnlock()
+
+	cell, exists := m.cells[id]
+
+	return cell, exists
 }
