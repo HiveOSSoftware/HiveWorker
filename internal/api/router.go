@@ -44,9 +44,9 @@ func NewRouter(cfg config.Config, manager *cell.Manager, combManager *comb.Manag
 
 	mux.Handle("POST /cells/{id}/backups", auth.Middleware(cfg, http.HandlerFunc(handler.CreateBackup)))
 	mux.Handle("GET /cells/{id}/backups", auth.Middleware(cfg, http.HandlerFunc(handler.ListBackups)))
-	mux.Handle("POST /cells/{id}/backups/mount", auth.Middleware(cfg, http.HandlerFunc(handler.MountBackup)))
-	mux.Handle("DELETE /cells/{id}/backups/mount", auth.Middleware(cfg, http.HandlerFunc(handler.UnmountBackup)))
-	mux.Handle("GET /cells/{id}/backups/mount", auth.Middleware(cfg, http.HandlerFunc(handler.ListMountedBackupFiles)))
+	mux.Handle("POST /cells/{id}/backups/{name}/mount", auth.Middleware(cfg, http.HandlerFunc(handler.MountBackup)))
+	mux.Handle("DELETE /cells/{id}/backup-mounts/{mountId}", auth.Middleware(cfg, http.HandlerFunc(handler.UnmountBackup)))
+	mux.Handle("GET /cells/{id}/backup-mounts/{mountId}/files", auth.Middleware(cfg, http.HandlerFunc(handler.ListMountedBackupFiles)))
 
 	mux.Handle("GET /cells/{id}/backups/files", auth.Middleware(cfg, http.HandlerFunc(handler.ListBackupFiles)))
 	mux.Handle("GET /cells/{id}/backups/files/read", auth.Middleware(cfg, http.HandlerFunc(handler.ReadBackupFile)))
