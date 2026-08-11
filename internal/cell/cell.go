@@ -15,11 +15,12 @@ type Cell struct {
 	CreatedAt string `json:"created_at"`
 	Status    string `json:"status"`
 
-	Comb       string                `json:"comb"`
-	CombData   map[string]any        `json:"comb_data,omitempty"`
-	Variables  map[string]string     `json:"variables"`
-	Allocation allocation.Allocation `json:"allocation"`
-	Limits     hiveruntime.Limits    `json:"limits"`
+	Comb                  string                  `json:"comb"`
+	CombData              map[string]any          `json:"comb_data,omitempty"`
+	Variables             map[string]string       `json:"variables"`
+	Allocation            allocation.Allocation   `json:"allocation"`
+	AdditionalAllocations []allocation.Allocation `json:"additional_allocations"`
+	Limits                hiveruntime.Limits      `json:"limits"`
 
 	console     []string
 	subscribers map[chan string]bool
@@ -28,22 +29,24 @@ type Cell struct {
 }
 
 type CreateCellRequest struct {
-	ID         string                `json:"id,omitempty"`
-	Name       string                `json:"name"`
-	Comb       string                `json:"comb"`
-	CombData   map[string]any        `json:"comb_data,omitempty"`
-	Variables  map[string]string     `json:"variables"`
-	Limits     hiveruntime.Limits    `json:"limits"`
-	Allocation allocation.Allocation `json:"allocation"`
+	ID                    string                  `json:"id,omitempty"`
+	Name                  string                  `json:"name"`
+	Comb                  string                  `json:"comb"`
+	CombData              map[string]any          `json:"comb_data,omitempty"`
+	Variables             map[string]string       `json:"variables"`
+	Limits                hiveruntime.Limits      `json:"limits"`
+	Allocation            allocation.Allocation   `json:"allocation"`
+	AdditionalAllocations []allocation.Allocation `json:"additional_allocations,omitempty"`
 }
 
 type UpdateCellDefinitionRequest struct {
-	Name       string                `json:"name"`
-	Comb       string                `json:"comb"`
-	CombData   map[string]any        `json:"comb_data"`
-	Variables  map[string]string     `json:"variables"`
-	Allocation allocation.Allocation `json:"allocation"`
-	Limits     hiveruntime.Limits    `json:"limits"`
+	Name                  string                  `json:"name"`
+	Comb                  string                  `json:"comb"`
+	CombData              map[string]any          `json:"comb_data"`
+	Variables             map[string]string       `json:"variables"`
+	Allocation            allocation.Allocation   `json:"allocation"`
+	AdditionalAllocations []allocation.Allocation `json:"additional_allocations"`
+	Limits                hiveruntime.Limits      `json:"limits"`
 }
 
 type CellStats struct {

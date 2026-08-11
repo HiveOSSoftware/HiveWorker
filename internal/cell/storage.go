@@ -3,13 +3,16 @@ package cell
 import (
 	"encoding/json"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 
+	"hivepanel-worker/internal/allocation"
 	"hivepanel-worker/internal/comb"
 )
 
@@ -31,10 +34,19 @@ func (m *Manager) Create(request CreateCellRequest) (*Cell, error) {
 		return nil, err
 	}
 
-	allocation := request.Allocation
+	primaryAllocation := request.Allocation
+	primaryAllocation.IP = strings.TrimSpace(primaryAllocation.IP)
 
-	if allocation.IP == "" || allocation.Port <= 0 {
+	if primaryAllocation.IP == "" || primaryAllocation.Port <= 0 {
 		return nil, errors.New("allocation is required")
+	}
+
+	additionalAllocations, err := normaliseAdditionalAllocations(
+		primaryAllocation,
+		request.AdditionalAllocations,
+	)
+	if err != nil {
+		return nil, err
 	}
 
 	variables := map[string]string{}
@@ -85,29 +97,30 @@ func (m *Manager) Create(request CreateCellRequest) (*Cell, error) {
 	}
 
 	gameCell := &Cell{
-		ID:         id,
-		Name:       request.Name,
-		Comb:       selectedComb.ID,
-		CombData:   request.CombData,
-		Variables:  variables,
-		Dir:        dir,
-		Allocation: allocation,
-		Limits:     limits,
-		CreatedAt:  time.Now().UTC().Format(time.RFC3339),
-		Status:     "offline",
+		ID:                    id,
+		Name:                  request.Name,
+		Comb:                  selectedComb.ID,
+		CombData:              request.CombData,
+		Variables:             variables,
+		Dir:                   dir,
+		Allocation:            primaryAllocation,
+		AdditionalAllocations: additionalAllocations,
+		Limits:                limits,
+		CreatedAt:             time.Now().UTC().Format(time.RFC3339),
+		Status:                "offline",
 
 		console:     []string{},
 		subscribers: map[chan string]bool{},
 	}
 
 	if err := os.MkdirAll(dir, 0755); err != nil {
-		m.allocManager.Release(allocation)
+		m.releaseCellAllocations(gameCell)
 		return nil, err
 	}
 
 	if err := m.save(gameCell); err != nil {
 		_ = os.RemoveAll(dir)
-		m.allocManager.Release(allocation)
+		m.releaseCellAllocations(gameCell)
 		return nil, err
 	}
 
@@ -121,7 +134,7 @@ func (m *Manager) Create(request CreateCellRequest) (*Cell, error) {
 func (m *Manager) Delete(id string) error {
 	m.mutex.Lock()
 
-	cell, exists := m.cells[id]
+	gameCell, exists := m.cells[id]
 	if !exists {
 		m.mutex.Unlock()
 		return errors.New("cell not found")
@@ -132,14 +145,14 @@ func (m *Manager) Delete(id string) error {
 		return errors.New("cell must be stopped first")
 	}
 
-	m.allocManager.Release(cell.Allocation)
+	m.releaseCellAllocations(gameCell)
 
 	delete(m.cells, id)
 	m.mutex.Unlock()
 
 	_ = os.Remove(m.cellConfigPath(id))
 
-	return os.RemoveAll(cell.Dir)
+	return os.RemoveAll(gameCell.Dir)
 }
 
 func (m *Manager) save(cell *Cell) error {
@@ -191,6 +204,55 @@ func (m *Manager) CellDir(id string) (string, error) {
 	}
 
 	return gameCell.Dir, nil
+}
+
+func (m *Manager) releaseCellAllocations(gameCell *Cell) {
+	m.allocManager.Release(gameCell.Allocation)
+
+	for _, allocation := range gameCell.AdditionalAllocations {
+		m.allocManager.Release(allocation)
+	}
+}
+
+func normaliseAdditionalAllocations(primary allocation.Allocation, additional []allocation.Allocation) ([]allocation.Allocation, error) {
+	if len(additional) == 0 {
+		return []allocation.Allocation{}, nil
+	}
+
+	result := make([]allocation.Allocation, 0, len(additional))
+	seen := map[string]bool{}
+
+	primaryKey := allocationKey(primary)
+
+	for _, item := range additional {
+		item.IP = strings.TrimSpace(item.IP)
+
+		if item.IP == "" || item.Port <= 0 {
+			return nil, errors.New("additional allocation is invalid")
+		}
+
+		key := allocationKey(item)
+
+		if key == primaryKey {
+			return nil, errors.New("primary allocation cannot also be an additional allocation")
+		}
+
+		if seen[key] {
+			return nil, errors.New("duplicate additional allocation")
+		}
+
+		seen[key] = true
+		result = append(result, item)
+	}
+
+	return result, nil
+}
+
+func allocationKey(value allocation.Allocation) string {
+	return net.JoinHostPort(
+		strings.TrimSpace(value.IP),
+		strconv.Itoa(value.Port),
+	)
 }
 
 func folderSize(path string) (int64, error) {
