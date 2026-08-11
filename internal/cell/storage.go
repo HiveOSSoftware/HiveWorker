@@ -14,6 +14,10 @@ import (
 )
 
 func (m *Manager) Create(request CreateCellRequest) (*Cell, error) {
+	request.ID = strings.TrimSpace(request.ID)
+	request.Name = strings.TrimSpace(request.Name)
+	request.Comb = strings.TrimSpace(request.Comb)
+
 	if request.Name == "" {
 		return nil, errors.New("name is required")
 	}
@@ -44,7 +48,31 @@ func (m *Manager) Create(request CreateCellRequest) (*Cell, error) {
 	}
 
 	id := uuid.NewString()
+
+	if request.ID != "" {
+		parsedID, err := uuid.Parse(request.ID)
+		if err != nil {
+			return nil, errors.New("invalid cell id")
+		}
+
+		id = parsedID.String()
+	}
+
+	m.mutex.RLock()
+	_, exists := m.cells[id]
+	m.mutex.RUnlock()
+
+	if exists {
+		return nil, errors.New("cell already exists")
+	}
+
 	dir := filepath.Join(m.instancesDir, id)
+
+	if _, err := os.Stat(dir); err == nil {
+		return nil, errors.New("cell directory already exists")
+	} else if !os.IsNotExist(err) {
+		return nil, err
+	}
 
 	limits := request.Limits
 
@@ -56,7 +84,7 @@ func (m *Manager) Create(request CreateCellRequest) (*Cell, error) {
 		limits.CPUPercent = 100
 	}
 
-	cell := &Cell{
+	gameCell := &Cell{
 		ID:         id,
 		Name:       request.Name,
 		Comb:       selectedComb.ID,
@@ -77,16 +105,17 @@ func (m *Manager) Create(request CreateCellRequest) (*Cell, error) {
 		return nil, err
 	}
 
-	if err := m.save(cell); err != nil {
+	if err := m.save(gameCell); err != nil {
+		_ = os.RemoveAll(dir)
 		m.allocManager.Release(allocation)
 		return nil, err
 	}
 
 	m.mutex.Lock()
-	m.cells[id] = cell
+	m.cells[id] = gameCell
 	m.mutex.Unlock()
 
-	return cell, nil
+	return gameCell, nil
 }
 
 func (m *Manager) Delete(id string) error {

@@ -970,14 +970,24 @@ func (h *Handler) CellStats(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) CreateCell(w http.ResponseWriter, r *http.Request) {
 	var request cell.CreateCellRequest
 
-	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-		http.Error(w, "invalid json body", http.StatusBadRequest)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+
+	if err := decoder.Decode(&request); err != nil {
+		http.Error(w, "invalid json body: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	gameServer, err := h.Manager.Create(request)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		status := http.StatusBadRequest
+
+		switch err.Error() {
+		case "cell already exists", "cell directory already exists":
+			status = http.StatusConflict
+		}
+
+		http.Error(w, err.Error(), status)
 		return
 	}
 

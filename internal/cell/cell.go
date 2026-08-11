@@ -28,6 +28,7 @@ type Cell struct {
 }
 
 type CreateCellRequest struct {
+	ID         string                `json:"id,omitempty"`
 	Name       string                `json:"name"`
 	Comb       string                `json:"comb"`
 	CombData   map[string]any        `json:"comb_data,omitempty"`
