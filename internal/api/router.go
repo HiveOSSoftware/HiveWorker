@@ -25,6 +25,8 @@ func NewRouter(cfg config.Config, manager *cell.Manager, combManager *comb.Manag
 	mux.Handle("GET /version", auth.Middleware(cfg, http.HandlerFunc(handler.Version)))
 	mux.Handle("GET /node/stats", auth.Middleware(cfg, http.HandlerFunc(handler.NodeStats)))
 
+	mux.Handle("PATCH /configuration/allocations", auth.Middleware(cfg, http.HandlerFunc(handler.UpdateAllocationConfiguration)))
+
 	mux.Handle("GET /combs", auth.Middleware(cfg, http.HandlerFunc(handler.ListCombs)))
 	mux.Handle("GET /combs/{id}", auth.Middleware(cfg, http.HandlerFunc(handler.GetComb)))
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -76,9 +77,16 @@ type DockerConfig struct {
 }
 
 type AllocationConfig struct {
-	IP        string `yaml:"ip"`
-	PortStart int    `yaml:"port_start"`
-	PortEnd   int    `yaml:"port_end"`
+	// IP is retained for backwards compatibility with older Worker configs.
+	//
+	// New installations should prefer IPs.
+	IP string `yaml:"ip,omitempty"`
+
+	// IPs contains every address that the Worker may use for allocations.
+	IPs []string `yaml:"ips,omitempty"`
+
+	PortStart int `yaml:"port_start"`
+	PortEnd   int `yaml:"port_end"`
 }
 
 type registrationRequest struct {
@@ -162,6 +170,7 @@ func Default() Config {
 
 		Allocations: AllocationConfig{
 			IP:        "0.0.0.0",
+			IPs:       []string{},
 			PortStart: 25565,
 			PortEnd:   25600,
 		},
@@ -236,6 +245,12 @@ func Save(cfg Config) error {
 		cfg.ConfigPath = resolveConfigPath()
 	}
 
+	normalise(&cfg)
+
+	if err := validate(cfg); err != nil {
+		return err
+	}
+
 	if err := os.MkdirAll(filepath.Dir(cfg.ConfigPath), 0755); err != nil {
 		return err
 	}
@@ -268,6 +283,30 @@ func applyEnvironmentOverrides(cfg *Config) {
 	if value := os.Getenv("HIVEPANEL_SFTP_HOST_KEY"); value != "" {
 		cfg.SFTP.HostKeyPath = value
 	}
+
+	if value := os.Getenv("HIVEPANEL_ALLOCATION_IP"); value != "" {
+		cfg.Allocations.IP = value
+	}
+
+	if value := os.Getenv("HIVEPANEL_ALLOCATION_IPS"); value != "" {
+		cfg.Allocations.IPs = splitCommaSeparated(value)
+	}
+
+	if value := os.Getenv("HIVEPANEL_ALLOCATION_PORT_START"); value != "" {
+		var port int
+
+		if _, err := fmt.Sscanf(value, "%d", &port); err == nil {
+			cfg.Allocations.PortStart = port
+		}
+	}
+
+	if value := os.Getenv("HIVEPANEL_ALLOCATION_PORT_END"); value != "" {
+		var port int
+
+		if _, err := fmt.Sscanf(value, "%d", &port); err == nil {
+			cfg.Allocations.PortEnd = port
+		}
+	}
 }
 
 func normalise(cfg *Config) {
@@ -283,6 +322,17 @@ func normalise(cfg *Config) {
 	cfg.Paths.Data = filepath.Clean(cfg.Paths.Data)
 	cfg.Paths.Instances = filepath.Clean(cfg.Paths.Instances)
 	cfg.Paths.Backups = filepath.Clean(cfg.Paths.Backups)
+	cfg.Paths.BackupMounts = filepath.Clean(cfg.Paths.BackupMounts)
+
+	cfg.Allocations.IP = strings.TrimSpace(cfg.Allocations.IP)
+	cfg.Allocations.IPs = normaliseAllocationIPs(
+		cfg.Allocations.IP,
+		cfg.Allocations.IPs,
+	)
+
+	if len(cfg.Allocations.IPs) > 0 {
+		cfg.Allocations.IP = cfg.Allocations.IPs[0]
+	}
 
 	if cfg.SFTP.PublicPort == 0 {
 		cfg.SFTP.PublicPort = portFromListen(cfg.SFTP.Listen, 2022)
@@ -308,6 +358,43 @@ func validate(cfg Config) error {
 
 	if cfg.Paths.Instances == "" || cfg.Paths.Instances == "." {
 		return fmt.Errorf("paths.instances is required")
+	}
+
+	if len(cfg.Allocations.IPs) == 0 {
+		return fmt.Errorf("at least one allocations.ips address is required")
+	}
+
+	for _, ip := range cfg.Allocations.IPs {
+		if ip == "0.0.0.0" || ip == "::" {
+			continue
+		}
+
+		if net.ParseIP(ip) == nil {
+			return fmt.Errorf(
+				"invalid allocation IP address: %s",
+				ip,
+			)
+		}
+	}
+
+	if cfg.Allocations.PortStart < 1 ||
+		cfg.Allocations.PortStart > 65535 {
+		return fmt.Errorf(
+			"allocations.port_start must be between 1 and 65535",
+		)
+	}
+
+	if cfg.Allocations.PortEnd < 1 ||
+		cfg.Allocations.PortEnd > 65535 {
+		return fmt.Errorf(
+			"allocations.port_end must be between 1 and 65535",
+		)
+	}
+
+	if cfg.Allocations.PortEnd < cfg.Allocations.PortStart {
+		return fmt.Errorf(
+			"allocations.port_end must be greater than or equal to allocations.port_start",
+		)
 	}
 
 	if cfg.SFTP.Enabled {
@@ -337,6 +424,56 @@ func validate(cfg Config) error {
 	}
 
 	return nil
+}
+
+func normaliseAllocationIPs(primary string, configured []string) []string {
+	values := make([]string, 0, len(configured)+1)
+
+	for _, ip := range configured {
+		ip = strings.TrimSpace(ip)
+
+		if ip != "" {
+			values = append(values, ip)
+		}
+	}
+
+	primary = strings.TrimSpace(primary)
+
+	if len(values) == 0 && primary != "" {
+		values = append(values, primary)
+	}
+
+	result := make([]string, 0, len(values))
+	seen := map[string]bool{}
+
+	for _, ip := range values {
+		ip = strings.TrimSpace(ip)
+
+		if ip == "" || seen[ip] {
+			continue
+		}
+
+		seen[ip] = true
+		result = append(result, ip)
+	}
+
+	return result
+}
+
+func splitCommaSeparated(value string) []string {
+	parts := strings.Split(value, ",")
+
+	result := make([]string, 0, len(parts))
+
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+
+		if part != "" {
+			result = append(result, part)
+		}
+	}
+
+	return result
 }
 
 func resolveConfigPath() string {

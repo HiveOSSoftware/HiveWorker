@@ -2,6 +2,7 @@ package allocation
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"strconv"
 	"strings"
@@ -30,6 +31,57 @@ func NewManager(ip string, portStart int, portEnd int, additionalIPs ...string) 
 		portEnd:   portEnd,
 		used:      map[string]bool{},
 	}
+}
+
+func (m *Manager) Configuration() ([]string, int, int) {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+
+	return append([]string(nil), m.ips...), m.portStart, m.portEnd
+}
+
+func (m *Manager) Reconfigure(ips []string, portStart int, portEnd int) ([]string, error) {
+	ips = normaliseIPs(ips)
+
+	if err := validateConfiguration(ips, portStart, portEnd); err != nil {
+		return nil, err
+	}
+
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+
+	for key := range m.used {
+		host, portText, err := net.SplitHostPort(key)
+		if err != nil {
+			return nil, fmt.Errorf("invalid reserved allocation %q", key)
+		}
+
+		port, err := strconv.Atoi(portText)
+		if err != nil {
+			return nil, fmt.Errorf("invalid reserved allocation port %q", portText)
+		}
+
+		if !containsIP(ips, host) {
+			return nil, fmt.Errorf(
+				"cannot remove allocation IP %s while an existing Cell still uses %s",
+				host,
+				key,
+			)
+		}
+
+		if port < portStart || port > portEnd {
+			return nil, fmt.Errorf(
+				"cannot change allocation port range while an existing Cell still uses %s",
+				key,
+			)
+		}
+	}
+
+	m.ips = append([]string(nil), ips...)
+	m.portStart = portStart
+	m.portEnd = portEnd
+
+	return append([]string(nil), m.ips...), nil
 }
 
 func (m *Manager) IPs() []string {
@@ -251,6 +303,36 @@ func isPortFree(ip string, port int) bool {
 	_ = listener.Close()
 
 	return true
+}
+
+func validateConfiguration(ips []string, portStart int, portEnd int) error {
+	if len(ips) == 0 {
+		return errors.New("at least one allocation IP is required")
+	}
+
+	for _, ip := range ips {
+		if ip == "0.0.0.0" || ip == "::" {
+			continue
+		}
+
+		if net.ParseIP(ip) == nil {
+			return fmt.Errorf("invalid allocation IP address: %s", ip)
+		}
+	}
+
+	if portStart < 1 || portStart > 65535 {
+		return errors.New("allocation port_start must be between 1 and 65535")
+	}
+
+	if portEnd < 1 || portEnd > 65535 {
+		return errors.New("allocation port_end must be between 1 and 65535")
+	}
+
+	if portEnd < portStart {
+		return errors.New("allocation port_end must be greater than or equal to port_start")
+	}
+
+	return nil
 }
 
 func normaliseIPs(ips []string) []string {

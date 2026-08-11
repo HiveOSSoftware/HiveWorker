@@ -20,10 +20,17 @@ import (
 func main() {
 	cfg := config.Load()
 
+	allocationIPs := cfg.Allocations.IPs
+
+	if len(allocationIPs) == 0 {
+		log.Fatal("no allocation IPs are configured")
+	}
+
 	allocManager := allocation.NewManager(
-		cfg.Allocations.IP,
+		allocationIPs[0],
 		cfg.Allocations.PortStart,
 		cfg.Allocations.PortEnd,
+		allocationIPs[1:]...,
 	)
 
 	combManager := comb.NewManager(cfg.Paths.Data)
@@ -123,6 +130,13 @@ func main() {
 	log.Println(
 		"Config loaded from " +
 			cfg.ConfigPath,
+	)
+
+	log.Printf(
+		"Allocation pool configured with %d IP address(es), ports %d-%d",
+		len(allocationIPs),
+		cfg.Allocations.PortStart,
+		cfg.Allocations.PortEnd,
 	)
 
 	log.Fatal(

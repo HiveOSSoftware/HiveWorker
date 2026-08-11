@@ -68,11 +68,15 @@ func (m *Manager) Load() error {
 		gameCell.console = []string{}
 		gameCell.subscribers = map[chan string]bool{}
 
+		if gameCell.AdditionalAllocations == nil {
+			gameCell.AdditionalAllocations = []allocation.Allocation{}
+		}
+
 		if lock, err := loadLock(gameCell.Dir); err == nil {
 			gameCell.Lock = lock
 		}
 
-		m.allocManager.ReserveExisting(gameCell.Allocation)
+		m.reserveCellAllocations(&gameCell)
 
 		m.cells[gameCell.ID] = &gameCell
 	}
@@ -86,6 +90,10 @@ func (m *Manager) List() []*Cell {
 	list := make([]*Cell, 0, len(m.cells))
 	for _, gameCell := range m.cells {
 		copyCell := *gameCell
+		copyCell.AdditionalAllocations = append(
+			[]allocation.Allocation(nil),
+			gameCell.AdditionalAllocations...,
+		)
 		list = append(list, &copyCell)
 	}
 
@@ -117,6 +125,11 @@ func (m *Manager) Get(id string) (*Cell, bool) {
 	}
 
 	copyCell := *gameCell
+	copyCell.AdditionalAllocations = append(
+		[]allocation.Allocation(nil),
+		gameCell.AdditionalAllocations...,
+	)
+
 	return &copyCell, true
 }
 
@@ -130,6 +143,11 @@ func (m *Manager) Status(id string) (*Cell, error) {
 	}
 
 	copyCell := *gameCell
+	copyCell.AdditionalAllocations = append(
+		[]allocation.Allocation(nil),
+		gameCell.AdditionalAllocations...,
+	)
+
 	m.mutex.RUnlock()
 
 	// Keep this simple for now. Do not call Docker/runtime here.
@@ -138,4 +156,12 @@ func (m *Manager) Status(id string) (*Cell, error) {
 	}
 
 	return &copyCell, nil
+}
+
+func (m *Manager) reserveCellAllocations(gameCell *Cell) {
+	m.allocManager.ReserveExisting(gameCell.Allocation)
+
+	for _, allocation := range gameCell.AdditionalAllocations {
+		m.allocManager.ReserveExisting(allocation)
+	}
 }
