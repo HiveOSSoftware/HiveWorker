@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -139,6 +140,28 @@ func (m *Manager) resolveComb(request CreateCellRequest) (*comb.Comb, error) {
 	}
 
 	return m.combManager.Require(request.Comb)
+}
+
+func (m *Manager) CellDir(id string) (string, error) {
+	id = strings.TrimSpace(id)
+
+	if id == "" {
+		return "", errors.New("cell id is required")
+	}
+
+	m.mutex.RLock()
+	defer m.mutex.RUnlock()
+
+	gameCell, exists := m.cells[id]
+	if !exists {
+		return "", errors.New("cell not found")
+	}
+
+	if strings.TrimSpace(gameCell.Dir) == "" {
+		return "", errors.New("cell directory is unavailable")
+	}
+
+	return gameCell.Dir, nil
 }
 
 func folderSize(path string) (int64, error) {

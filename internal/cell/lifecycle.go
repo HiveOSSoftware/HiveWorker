@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	hiveruntime "hivepanel-worker/internal/runtime"
 )
@@ -113,4 +114,14 @@ func (m *Manager) broadcastByID(id string, line string) {
 	}
 
 	m.broadcast(cell, line)
+}
+
+func (m *Manager) IsRunning(id string) bool {
+	id = strings.TrimSpace(id)
+
+	if id == "" {
+		return false
+	}
+
+	return m.runtime.IsRunning(id)
 }

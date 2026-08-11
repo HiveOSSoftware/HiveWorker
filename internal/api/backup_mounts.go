@@ -32,6 +32,16 @@ type unmountBackupResponse struct {
 	Status  string `json:"status"`
 }
 
+type restoreMountedBackupPathRequest struct {
+	Path string `json:"path"`
+}
+
+type restoreMountedBackupPathResponse struct {
+	MountID string `json:"mount_id"`
+	Path    string `json:"path"`
+	Status  string `json:"status"`
+}
+
 // MountBackup extracts a backup into its temporary mount directory.
 //
 // POST /cells/{id}/backups/{name}/mount
@@ -48,11 +58,11 @@ func (handler *Handler) MountBackup(
 	cellID := strings.TrimSpace(request.PathValue("id"))
 	backupID := strings.TrimSpace(request.PathValue("name"))
 
-	if cellID == "" {
+	if invalidCellID(cellID) {
 		writeBackupMountError(
 			writer,
 			http.StatusBadRequest,
-			"cell id is required",
+			"invalid cell id",
 		)
 
 		return
@@ -186,11 +196,11 @@ func (handler *Handler) UnmountBackup(
 	cellID := strings.TrimSpace(request.PathValue("id"))
 	mountID := strings.TrimSpace(request.PathValue("mountId"))
 
-	if cellID == "" {
+	if invalidCellID(cellID) {
 		writeBackupMountError(
 			writer,
 			http.StatusBadRequest,
-			"cell id is required",
+			"invalid cell id",
 		)
 
 		return
@@ -263,11 +273,11 @@ func (handler *Handler) ListMountedBackupFiles(
 	cellID := strings.TrimSpace(request.PathValue("id"))
 	mountID := strings.TrimSpace(request.PathValue("mountId"))
 
-	if cellID == "" {
+	if invalidCellID(cellID) {
 		writeBackupMountError(
 			writer,
 			http.StatusBadRequest,
-			"cell id is required",
+			"invalid cell id",
 		)
 
 		return
@@ -385,6 +395,177 @@ func (handler *Handler) ListMountedBackupFiles(
 			"path":       result.Path,
 			"files":      result.Files,
 			"pagination": result.Pagination,
+		},
+	)
+}
+
+// RestoreMountedBackupPath restores a file or directory from a mounted
+// backup into the live cell directory.
+//
+// POST /cells/{id}/backup-mounts/{mountId}/restore
+//
+// Request:
+//
+//	{
+//	    "path": "plugins/MyPlugin/config.yml"
+//	}
+func (handler *Handler) RestoreMountedBackupPath(
+	writer http.ResponseWriter,
+	request *http.Request,
+) {
+	cellID := strings.TrimSpace(
+		request.PathValue("id"),
+	)
+
+	mountID := strings.TrimSpace(
+		request.PathValue("mountId"),
+	)
+
+	if invalidCellID(cellID) {
+		writeBackupMountError(
+			writer,
+			http.StatusBadRequest,
+			"invalid cell id",
+		)
+
+		return
+	}
+
+	if mountID == "" {
+		writeBackupMountError(
+			writer,
+			http.StatusBadRequest,
+			"mount id is required",
+		)
+
+		return
+	}
+
+	if handler.BackupMounts == nil {
+		writeBackupMountError(
+			writer,
+			http.StatusInternalServerError,
+			"backup mount service is unavailable",
+		)
+
+		return
+	}
+
+	var payload restoreMountedBackupPathRequest
+
+	decoder := json.NewDecoder(request.Body)
+	decoder.DisallowUnknownFields()
+
+	if err := decoder.Decode(&payload); err != nil {
+		writeBackupMountError(
+			writer,
+			http.StatusBadRequest,
+			"invalid request body",
+		)
+
+		return
+	}
+
+	payload.Path = strings.TrimSpace(
+		payload.Path,
+	)
+
+	if payload.Path == "" {
+		writeBackupMountError(
+			writer,
+			http.StatusBadRequest,
+			"path is required",
+		)
+
+		return
+	}
+
+	cellDir, err := handler.Manager.CellDir(
+		cellID,
+	)
+	if handler.Manager.IsRunning(cellID) {
+		writeBackupMountError(
+			writer,
+			http.StatusConflict,
+			"cell must be stopped before restoring backup files",
+		)
+
+		return
+	}
+
+	if err != nil {
+		writeBackupMountError(
+			writer,
+			http.StatusNotFound,
+			"cell was not found",
+		)
+
+		return
+	}
+
+	err = handler.BackupMounts.RestorePath(
+		cellID,
+		mountID,
+		payload.Path,
+		cellDir,
+	)
+	if err != nil {
+		switch {
+		case errors.Is(err, os.ErrNotExist):
+			writeBackupMountError(
+				writer,
+				http.StatusNotFound,
+				"backup file or directory was not found",
+			)
+
+		case errors.Is(
+			err,
+			backup.ErrInvalidMountID,
+		):
+			writeBackupMountError(
+				writer,
+				http.StatusBadRequest,
+				"invalid mount id",
+			)
+
+		case errors.Is(
+			err,
+			backup.ErrUnsafeArchivePath,
+		):
+			writeBackupMountError(
+				writer,
+				http.StatusBadRequest,
+				"invalid backup path",
+			)
+
+		case errors.Is(
+			err,
+			backup.ErrUnsupportedEntry,
+		):
+			writeBackupMountError(
+				writer,
+				http.StatusUnprocessableEntity,
+				"backup path contains an unsupported entry",
+			)
+
+		default:
+			writeBackupMountError(
+				writer,
+				http.StatusInternalServerError,
+				"failed to restore backup path: "+err.Error(),
+			)
+		}
+
+		return
+	}
+
+	writeBackupMountJSON(
+		writer,
+		http.StatusOK,
+		restoreMountedBackupPathResponse{
+			MountID: mountID,
+			Path:    payload.Path,
+			Status:  "restored",
 		},
 	)
 }
