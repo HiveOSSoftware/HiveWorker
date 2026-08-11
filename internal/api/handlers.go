@@ -985,7 +985,7 @@ func (h *Handler) CreateCell(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) InstallCell(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
+	id := strings.TrimSpace(r.PathValue("id"))
 
 	if invalidCellID(id) {
 		http.Error(w, "invalid cell id", http.StatusBadRequest)
@@ -1001,6 +1001,78 @@ func (h *Handler) InstallCell(w http.ResponseWriter, r *http.Request) {
 		"message": "install completed",
 		"id":      id,
 	})
+}
+
+func (h *Handler) ReinstallCell(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.PathValue("id"))
+
+	if invalidCellID(id) {
+		http.Error(
+			w,
+			"invalid cell id",
+			http.StatusBadRequest,
+		)
+		return
+	}
+
+	if err := h.Manager.Reinstall(id); err != nil {
+		http.Error(
+			w,
+			err.Error(),
+			http.StatusBadRequest,
+		)
+		return
+	}
+
+	writeJSON(w, map[string]any{
+		"message": "cell prepared for reinstall",
+		"id":      id,
+	})
+}
+
+func (h *Handler) UpdateCellDefinition(
+	w http.ResponseWriter,
+	r *http.Request,
+) {
+	id := strings.TrimSpace(r.PathValue("id"))
+
+	if invalidCellID(id) {
+		http.Error(
+			w,
+			"invalid cell id",
+			http.StatusBadRequest,
+		)
+		return
+	}
+
+	var request cell.UpdateCellDefinitionRequest
+
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+
+	if err := decoder.Decode(&request); err != nil {
+		http.Error(
+			w,
+			"invalid json body",
+			http.StatusBadRequest,
+		)
+		return
+	}
+
+	gameServer, err := h.Manager.UpdateDefinition(
+		id,
+		request,
+	)
+	if err != nil {
+		http.Error(
+			w,
+			err.Error(),
+			http.StatusBadRequest,
+		)
+		return
+	}
+
+	writeJSON(w, gameServer)
 }
 
 func (h *Handler) DeleteCell(w http.ResponseWriter, r *http.Request) {

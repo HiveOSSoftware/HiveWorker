@@ -36,6 +36,12 @@ type CreateCellRequest struct {
 	Allocation allocation.Allocation `json:"allocation"`
 }
 
+type UpdateCellDefinitionRequest struct {
+	Comb      string            `json:"comb"`
+	CombData  map[string]any    `json:"comb_data"`
+	Variables map[string]string `json:"variables"`
+}
+
 type CellStats struct {
 	ID             string  `json:"id"`
 	Running        bool    `json:"running"`
