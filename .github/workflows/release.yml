@@ -23,12 +23,23 @@ jobs:
           go-version: "1.24.x"
 
       - name: Build Linux AMD64
+        env:
+          VERSION: ${{ github.ref_name }}
         run: |
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o dist/hiveworker_linux_amd64 ./cmd/daemon
+          mkdir -p dist
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+            -ldflags "-s -w -X hivepanel-worker/internal/version.Version=$VERSION" \
+            -o dist/hiveworker_linux_amd64 \
+            ./cmd/daemon
 
       - name: Build Linux ARM64
+        env:
+          VERSION: ${{ github.ref_name }}
         run: |
-          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o dist/hiveworker_linux_arm64 ./cmd/daemon
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build \
+            -ldflags "-s -w -X hivepanel-worker/internal/version.Version=$VERSION" \
+            -o dist/hiveworker_linux_arm64 \
+            ./cmd/daemon
 
       - name: Make binaries executable
         run: |
