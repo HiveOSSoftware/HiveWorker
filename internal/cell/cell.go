@@ -37,9 +37,12 @@ type CreateCellRequest struct {
 }
 
 type UpdateCellDefinitionRequest struct {
-	Comb      string            `json:"comb"`
-	CombData  map[string]any    `json:"comb_data"`
-	Variables map[string]string `json:"variables"`
+	Name       string                `json:"name"`
+	Comb       string                `json:"comb"`
+	CombData   map[string]any        `json:"comb_data"`
+	Variables  map[string]string     `json:"variables"`
+	Allocation allocation.Allocation `json:"allocation"`
+	Limits     hiveruntime.Limits    `json:"limits"`
 }
 
 type CellStats struct {

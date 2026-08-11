@@ -1064,10 +1064,20 @@ func (h *Handler) UpdateCellDefinition(
 		request,
 	)
 	if err != nil {
+		status := http.StatusBadRequest
+
+		switch err.Error() {
+		case "cell not found":
+			status = http.StatusNotFound
+
+		case "cell must be stopped before changing its definition":
+			status = http.StatusConflict
+		}
+
 		http.Error(
 			w,
 			err.Error(),
-			http.StatusBadRequest,
+			status,
 		)
 		return
 	}

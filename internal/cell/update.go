@@ -10,10 +10,15 @@ func (m *Manager) UpdateDefinition(
 	request UpdateCellDefinitionRequest,
 ) (*Cell, error) {
 	id = strings.TrimSpace(id)
+	request.Name = strings.TrimSpace(request.Name)
 	request.Comb = strings.TrimSpace(request.Comb)
 
 	if id == "" {
 		return nil, errors.New("cell id is required")
+	}
+
+	if request.Name == "" {
+		return nil, errors.New("cell name is required")
 	}
 
 	if request.Comb == "" {
@@ -40,9 +45,12 @@ func (m *Manager) UpdateDefinition(
 		return nil, errors.New("cell must be stopped before changing its definition")
 	}
 
+	gameCell.Name = request.Name
 	gameCell.Comb = request.Comb
 	gameCell.CombData = request.CombData
 	gameCell.Variables = request.Variables
+	gameCell.Allocation = request.Allocation
+	gameCell.Limits = request.Limits
 
 	if err := m.save(gameCell); err != nil {
 		return nil, err
