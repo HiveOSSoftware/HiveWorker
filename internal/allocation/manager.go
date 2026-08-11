@@ -10,131 +10,79 @@ import (
 )
 
 type Allocation struct {
-	IP   string `json:"ip"`
-	Port int    `json:"port"`
+	IP   string `json:"ip" yaml:"ip"`
+	Port int    `json:"port" yaml:"port"`
 }
 
 type Manager struct {
-	mutex     sync.Mutex
-	ips       []string
-	portStart int
-	portEnd   int
-	used      map[string]bool
+	mutex   sync.Mutex
+	allowed []Allocation
+	used    map[string]bool
 }
 
-func NewManager(ip string, portStart int, portEnd int, additionalIPs ...string) *Manager {
-	ips := normaliseIPs(append([]string{ip}, additionalIPs...))
-
+func NewManager(allocations []Allocation) *Manager {
 	return &Manager{
-		ips:       ips,
-		portStart: portStart,
-		portEnd:   portEnd,
-		used:      map[string]bool{},
+		allowed: normaliseAllocations(allocations),
+		used:    map[string]bool{},
 	}
 }
 
-func (m *Manager) Configuration() ([]string, int, int) {
+func (m *Manager) Configuration() []Allocation {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 
-	return append([]string(nil), m.ips...), m.portStart, m.portEnd
+	return cloneAllocations(m.allowed)
 }
 
-func (m *Manager) Reconfigure(ips []string, portStart int, portEnd int) ([]string, error) {
-	ips = normaliseIPs(ips)
+func (m *Manager) Reconfigure(allocations []Allocation) ([]Allocation, error) {
+	allocations = normaliseAllocations(allocations)
 
-	if err := validateConfiguration(ips, portStart, portEnd); err != nil {
+	if err := validateConfiguration(allocations); err != nil {
 		return nil, err
 	}
 
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 
+	allowed := allocationSet(allocations)
+
 	for key := range m.used {
-		host, portText, err := net.SplitHostPort(key)
-		if err != nil {
-			return nil, fmt.Errorf("invalid reserved allocation %q", key)
-		}
-
-		port, err := strconv.Atoi(portText)
-		if err != nil {
-			return nil, fmt.Errorf("invalid reserved allocation port %q", portText)
-		}
-
-		if !containsIP(ips, host) {
+		if !allowed[key] {
 			return nil, fmt.Errorf(
-				"cannot remove allocation IP %s while an existing Cell still uses %s",
-				host,
-				key,
-			)
-		}
-
-		if port < portStart || port > portEnd {
-			return nil, fmt.Errorf(
-				"cannot change allocation port range while an existing Cell still uses %s",
+				"cannot remove allocation %s while an existing Cell still uses it",
 				key,
 			)
 		}
 	}
 
-	m.ips = append([]string(nil), ips...)
-	m.portStart = portStart
-	m.portEnd = portEnd
+	m.allowed = cloneAllocations(allocations)
 
-	return append([]string(nil), m.ips...), nil
+	return cloneAllocations(m.allowed), nil
 }
 
 func (m *Manager) IPs() []string {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 
-	return append([]string(nil), m.ips...)
-}
+	result := make([]string, 0)
+	seen := map[string]bool{}
 
-func (m *Manager) AddIP(ip string) {
-	ip = strings.TrimSpace(ip)
-
-	if ip == "" {
-		return
-	}
-
-	m.mutex.Lock()
-	defer m.mutex.Unlock()
-
-	for _, existing := range m.ips {
-		if existing == ip {
-			return
+	for _, item := range m.allowed {
+		if seen[item.IP] {
+			continue
 		}
+
+		seen[item.IP] = true
+		result = append(result, item.IP)
 	}
 
-	m.ips = append(m.ips, ip)
-}
-
-func (m *Manager) RemoveIP(ip string) {
-	ip = strings.TrimSpace(ip)
-
-	if ip == "" {
-		return
-	}
-
-	m.mutex.Lock()
-	defer m.mutex.Unlock()
-
-	filtered := make([]string, 0, len(m.ips))
-
-	for _, existing := range m.ips {
-		if existing != ip {
-			filtered = append(filtered, existing)
-		}
-	}
-
-	m.ips = filtered
+	return result
 }
 
 func (m *Manager) ReserveExisting(allocation Allocation) {
-	allocation.IP = strings.TrimSpace(allocation.IP)
+	allocation = normaliseAllocation(allocation)
 
-	if allocation.IP == "" || allocation.Port <= 0 {
+	if !validAllocation(allocation) {
 		return
 	}
 
@@ -148,14 +96,14 @@ func (m *Manager) ReserveMany(allocations []Allocation) {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 
-	for _, allocation := range allocations {
-		allocation.IP = strings.TrimSpace(allocation.IP)
+	for _, item := range allocations {
+		item = normaliseAllocation(item)
 
-		if allocation.IP == "" || allocation.Port <= 0 {
+		if !validAllocation(item) {
 			continue
 		}
 
-		m.used[allocationKey(allocation)] = true
+		m.used[allocationKey(item)] = true
 	}
 }
 
@@ -163,24 +111,24 @@ func (m *Manager) ReplaceReservations(oldAllocations []Allocation, newAllocation
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 
-	for _, allocation := range oldAllocations {
-		allocation.IP = strings.TrimSpace(allocation.IP)
+	for _, item := range oldAllocations {
+		item = normaliseAllocation(item)
 
-		if allocation.IP == "" || allocation.Port <= 0 {
+		if !validAllocation(item) {
 			continue
 		}
 
-		delete(m.used, allocationKey(allocation))
+		delete(m.used, allocationKey(item))
 	}
 
-	for _, allocation := range newAllocations {
-		allocation.IP = strings.TrimSpace(allocation.IP)
+	for _, item := range newAllocations {
+		item = normaliseAllocation(item)
 
-		if allocation.IP == "" || allocation.Port <= 0 {
+		if !validAllocation(item) {
 			continue
 		}
 
-		m.used[allocationKey(allocation)] = true
+		m.used[allocationKey(item)] = true
 	}
 }
 
@@ -188,31 +136,24 @@ func (m *Manager) Allocate() (Allocation, error) {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 
-	if len(m.ips) == 0 {
-		return Allocation{}, errors.New("no allocation IPs configured")
+	if len(m.allowed) == 0 {
+		return Allocation{}, errors.New("no allocations configured")
 	}
 
-	for _, ip := range m.ips {
-		for port := m.portStart; port <= m.portEnd; port++ {
-			allocation := Allocation{
-				IP:   ip,
-				Port: port,
-			}
+	for _, item := range m.allowed {
+		key := allocationKey(item)
 
-			key := allocationKey(allocation)
-
-			if m.used[key] {
-				continue
-			}
-
-			if !isPortFree(ip, port) {
-				continue
-			}
-
-			m.used[key] = true
-
-			return allocation, nil
+		if m.used[key] {
+			continue
 		}
+
+		if !isPortFree(item.IP, item.Port) {
+			continue
+		}
+
+		m.used[key] = true
+
+		return item, nil
 	}
 
 	return Allocation{}, errors.New("no free allocations available")
@@ -228,38 +169,41 @@ func (m *Manager) AllocateForIP(ip string) (Allocation, error) {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 
-	if !containsIP(m.ips, ip) {
-		return Allocation{}, errors.New("allocation IP is not configured")
-	}
+	configured := false
 
-	for port := m.portStart; port <= m.portEnd; port++ {
-		allocation := Allocation{
-			IP:   ip,
-			Port: port,
+	for _, item := range m.allowed {
+		if item.IP != ip {
+			continue
 		}
 
-		key := allocationKey(allocation)
+		configured = true
+
+		key := allocationKey(item)
 
 		if m.used[key] {
 			continue
 		}
 
-		if !isPortFree(ip, port) {
+		if !isPortFree(item.IP, item.Port) {
 			continue
 		}
 
 		m.used[key] = true
 
-		return allocation, nil
+		return item, nil
+	}
+
+	if !configured {
+		return Allocation{}, errors.New("allocation IP is not configured")
 	}
 
 	return Allocation{}, errors.New("no free allocations available for IP")
 }
 
 func (m *Manager) IsReserved(allocation Allocation) bool {
-	allocation.IP = strings.TrimSpace(allocation.IP)
+	allocation = normaliseAllocation(allocation)
 
-	if allocation.IP == "" || allocation.Port <= 0 {
+	if !validAllocation(allocation) {
 		return false
 	}
 
@@ -270,9 +214,9 @@ func (m *Manager) IsReserved(allocation Allocation) bool {
 }
 
 func (m *Manager) Release(allocation Allocation) {
-	allocation.IP = strings.TrimSpace(allocation.IP)
+	allocation = normaliseAllocation(allocation)
 
-	if allocation.IP == "" || allocation.Port <= 0 {
+	if !validAllocation(allocation) {
 		return
 	}
 
@@ -305,60 +249,87 @@ func isPortFree(ip string, port int) bool {
 	return true
 }
 
-func validateConfiguration(ips []string, portStart int, portEnd int) error {
-	if len(ips) == 0 {
-		return errors.New("at least one allocation IP is required")
+func validateConfiguration(allocations []Allocation) error {
+	if len(allocations) == 0 {
+		return errors.New("at least one allocation is required")
 	}
 
-	for _, ip := range ips {
-		if ip == "0.0.0.0" || ip == "::" {
-			continue
+	for _, item := range allocations {
+		if err := validateAllocation(item); err != nil {
+			return err
 		}
-
-		if net.ParseIP(ip) == nil {
-			return fmt.Errorf("invalid allocation IP address: %s", ip)
-		}
-	}
-
-	if portStart < 1 || portStart > 65535 {
-		return errors.New("allocation port_start must be between 1 and 65535")
-	}
-
-	if portEnd < 1 || portEnd > 65535 {
-		return errors.New("allocation port_end must be between 1 and 65535")
-	}
-
-	if portEnd < portStart {
-		return errors.New("allocation port_end must be greater than or equal to port_start")
 	}
 
 	return nil
 }
 
-func normaliseIPs(ips []string) []string {
-	result := make([]string, 0, len(ips))
+func validateAllocation(allocation Allocation) error {
+	allocation = normaliseAllocation(allocation)
+
+	if allocation.IP == "" {
+		return errors.New("allocation IP is required")
+	}
+
+	if allocation.IP != "0.0.0.0" && allocation.IP != "::" && net.ParseIP(allocation.IP) == nil {
+		return fmt.Errorf("invalid allocation IP address: %s", allocation.IP)
+	}
+
+	if allocation.Port < 1 || allocation.Port > 65535 {
+		return fmt.Errorf(
+			"allocation port must be between 1 and 65535 for %s",
+			allocation.IP,
+		)
+	}
+
+	return nil
+}
+
+func normaliseAllocations(allocations []Allocation) []Allocation {
+	result := make([]Allocation, 0, len(allocations))
 	seen := map[string]bool{}
 
-	for _, ip := range ips {
-		ip = strings.TrimSpace(ip)
+	for _, item := range allocations {
+		item = normaliseAllocation(item)
 
-		if ip == "" || seen[ip] {
+		if !validAllocation(item) {
 			continue
 		}
 
-		seen[ip] = true
-		result = append(result, ip)
+		key := allocationKey(item)
+
+		if seen[key] {
+			continue
+		}
+
+		seen[key] = true
+		result = append(result, item)
 	}
 
 	return result
 }
 
-func containsIP(ips []string, ip string) bool {
-	for _, existing := range ips {
-		if existing == ip {
-			return true
-		}
+func normaliseAllocation(allocation Allocation) Allocation {
+	allocation.IP = strings.TrimSpace(allocation.IP)
+
+	return allocation
+}
+
+func validAllocation(allocation Allocation) bool {
+	return allocation.IP != "" &&
+		allocation.Port >= 1 &&
+		allocation.Port <= 65535
+}
+
+func allocationSet(allocations []Allocation) map[string]bool {
+	result := make(map[string]bool, len(allocations))
+
+	for _, item := range allocations {
+		result[allocationKey(item)] = true
 	}
 
-	return false
+	return result
+}
+
+func cloneAllocations(allocations []Allocation) []Allocation {
+	return append([]Allocation(nil), allocations...)
 }

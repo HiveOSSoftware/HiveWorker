@@ -1,13 +1,11 @@
 package cell
 
-func (m *Manager) ReconfigureAllocations(ips []string, portStart int, portEnd int) ([]string, error) {
-	return m.allocManager.Reconfigure(
-		ips,
-		portStart,
-		portEnd,
-	)
+import "hivepanel-worker/internal/allocation"
+
+func (m *Manager) ReconfigureAllocations(allocations []allocation.Allocation) ([]allocation.Allocation, error) {
+	return m.allocManager.Reconfigure(allocations)
 }
 
-func (m *Manager) AllocationConfiguration() ([]string, int, int) {
+func (m *Manager) AllocationConfiguration() []allocation.Allocation {
 	return m.allocManager.Configuration()
 }

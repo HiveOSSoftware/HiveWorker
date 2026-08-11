@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"hivepanel-worker/internal/allocation"
 )
 
 type Config struct {
@@ -77,16 +79,14 @@ type DockerConfig struct {
 }
 
 type AllocationConfig struct {
-	// IP is retained for backwards compatibility with older Worker configs.
-	//
-	// New installations should prefer IPs.
-	IP string `yaml:"ip,omitempty"`
+	Entries []allocation.Allocation `yaml:"entries,omitempty"`
 
-	// IPs contains every address that the Worker may use for allocations.
-	IPs []string `yaml:"ips,omitempty"`
-
-	PortStart int `yaml:"port_start"`
-	PortEnd   int `yaml:"port_end"`
+	// Legacy fields are retained so existing Worker configs can be loaded and
+	// migrated automatically to exact allocation entries.
+	IP        string   `yaml:"ip,omitempty"`
+	IPs       []string `yaml:"ips,omitempty"`
+	PortStart int      `yaml:"port_start,omitempty"`
+	PortEnd   int      `yaml:"port_end,omitempty"`
 }
 
 type registrationRequest struct {
@@ -169,6 +169,7 @@ func Default() Config {
 		},
 
 		Allocations: AllocationConfig{
+			Entries:   []allocation.Allocation{},
 			IP:        "0.0.0.0",
 			IPs:       []string{},
 			PortStart: 25565,
@@ -286,10 +287,12 @@ func applyEnvironmentOverrides(cfg *Config) {
 
 	if value := os.Getenv("HIVEPANEL_ALLOCATION_IP"); value != "" {
 		cfg.Allocations.IP = value
+		cfg.Allocations.Entries = nil
 	}
 
 	if value := os.Getenv("HIVEPANEL_ALLOCATION_IPS"); value != "" {
 		cfg.Allocations.IPs = splitCommaSeparated(value)
+		cfg.Allocations.Entries = nil
 	}
 
 	if value := os.Getenv("HIVEPANEL_ALLOCATION_PORT_START"); value != "" {
@@ -297,6 +300,7 @@ func applyEnvironmentOverrides(cfg *Config) {
 
 		if _, err := fmt.Sscanf(value, "%d", &port); err == nil {
 			cfg.Allocations.PortStart = port
+			cfg.Allocations.Entries = nil
 		}
 	}
 
@@ -305,6 +309,7 @@ func applyEnvironmentOverrides(cfg *Config) {
 
 		if _, err := fmt.Sscanf(value, "%d", &port); err == nil {
 			cfg.Allocations.PortEnd = port
+			cfg.Allocations.Entries = nil
 		}
 	}
 }
@@ -324,15 +329,13 @@ func normalise(cfg *Config) {
 	cfg.Paths.Backups = filepath.Clean(cfg.Paths.Backups)
 	cfg.Paths.BackupMounts = filepath.Clean(cfg.Paths.BackupMounts)
 
-	cfg.Allocations.IP = strings.TrimSpace(cfg.Allocations.IP)
-	cfg.Allocations.IPs = normaliseAllocationIPs(
-		cfg.Allocations.IP,
-		cfg.Allocations.IPs,
-	)
+	cfg.Allocations.Entries = normaliseAllocationEntries(cfg.Allocations)
 
-	if len(cfg.Allocations.IPs) > 0 {
-		cfg.Allocations.IP = cfg.Allocations.IPs[0]
-	}
+	// Once exact entries exist they become the persisted source of truth.
+	cfg.Allocations.IP = ""
+	cfg.Allocations.IPs = nil
+	cfg.Allocations.PortStart = 0
+	cfg.Allocations.PortEnd = 0
 
 	if cfg.SFTP.PublicPort == 0 {
 		cfg.SFTP.PublicPort = portFromListen(cfg.SFTP.Listen, 2022)
@@ -360,41 +363,40 @@ func validate(cfg Config) error {
 		return fmt.Errorf("paths.instances is required")
 	}
 
-	if len(cfg.Allocations.IPs) == 0 {
-		return fmt.Errorf("at least one allocations.ips address is required")
+	if len(cfg.Allocations.Entries) == 0 {
+		return fmt.Errorf("at least one allocations.entries item is required")
 	}
 
-	for _, ip := range cfg.Allocations.IPs {
-		if ip == "0.0.0.0" || ip == "::" {
-			continue
+	seenAllocations := map[string]bool{}
+
+	for _, item := range cfg.Allocations.Entries {
+		ip := strings.TrimSpace(item.IP)
+
+		if ip == "" {
+			return fmt.Errorf("allocation IP is required")
 		}
 
-		if net.ParseIP(ip) == nil {
+		if ip != "0.0.0.0" && ip != "::" && net.ParseIP(ip) == nil {
 			return fmt.Errorf(
 				"invalid allocation IP address: %s",
 				ip,
 			)
 		}
-	}
 
-	if cfg.Allocations.PortStart < 1 ||
-		cfg.Allocations.PortStart > 65535 {
-		return fmt.Errorf(
-			"allocations.port_start must be between 1 and 65535",
-		)
-	}
+		if item.Port < 1 || item.Port > 65535 {
+			return fmt.Errorf(
+				"allocation port must be between 1 and 65535 for %s",
+				ip,
+			)
+		}
 
-	if cfg.Allocations.PortEnd < 1 ||
-		cfg.Allocations.PortEnd > 65535 {
-		return fmt.Errorf(
-			"allocations.port_end must be between 1 and 65535",
-		)
-	}
+		key := net.JoinHostPort(ip, fmt.Sprintf("%d", item.Port))
 
-	if cfg.Allocations.PortEnd < cfg.Allocations.PortStart {
-		return fmt.Errorf(
-			"allocations.port_end must be greater than or equal to allocations.port_start",
-		)
+		if seenAllocations[key] {
+			return fmt.Errorf("duplicate allocation entry: %s", key)
+		}
+
+		seenAllocations[key] = true
 	}
 
 	if cfg.SFTP.Enabled {
@@ -424,6 +426,69 @@ func validate(cfg Config) error {
 	}
 
 	return nil
+}
+
+func normaliseAllocationEntries(cfg AllocationConfig) []allocation.Allocation {
+	if len(cfg.Entries) > 0 {
+		return deduplicateAllocationEntries(cfg.Entries)
+	}
+
+	ips := normaliseAllocationIPs(
+		strings.TrimSpace(cfg.IP),
+		cfg.IPs,
+	)
+
+	if len(ips) == 0 {
+		return []allocation.Allocation{}
+	}
+
+	if cfg.PortStart < 1 || cfg.PortEnd < cfg.PortStart {
+		return []allocation.Allocation{}
+	}
+
+	entries := make(
+		[]allocation.Allocation,
+		0,
+		len(ips)*(cfg.PortEnd-cfg.PortStart+1),
+	)
+
+	for _, ip := range ips {
+		for port := cfg.PortStart; port <= cfg.PortEnd; port++ {
+			entries = append(entries, allocation.Allocation{
+				IP:   ip,
+				Port: port,
+			})
+		}
+	}
+
+	return deduplicateAllocationEntries(entries)
+}
+
+func deduplicateAllocationEntries(entries []allocation.Allocation) []allocation.Allocation {
+	result := make([]allocation.Allocation, 0, len(entries))
+	seen := map[string]bool{}
+
+	for _, item := range entries {
+		item.IP = strings.TrimSpace(item.IP)
+
+		if item.IP == "" || item.Port < 1 || item.Port > 65535 {
+			continue
+		}
+
+		key := net.JoinHostPort(
+			item.IP,
+			fmt.Sprintf("%d", item.Port),
+		)
+
+		if seen[key] {
+			continue
+		}
+
+		seen[key] = true
+		result = append(result, item)
+	}
+
+	return result
 }
 
 func normaliseAllocationIPs(primary string, configured []string) []string {

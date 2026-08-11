@@ -4,13 +4,12 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"hivepanel-worker/internal/allocation"
 	"hivepanel-worker/internal/config"
 )
 
 type AllocationConfigurationRequest struct {
-	IPs       []string `json:"ips"`
-	PortStart int      `json:"port_start"`
-	PortEnd   int      `json:"port_end"`
+	Allocations []allocation.Allocation `json:"allocations"`
 }
 
 func (h *Handler) UpdateAllocationConfiguration(w http.ResponseWriter, r *http.Request) {
@@ -24,12 +23,10 @@ func (h *Handler) UpdateAllocationConfiguration(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	oldIPs, oldPortStart, oldPortEnd := h.Manager.AllocationConfiguration()
+	oldAllocations := h.Manager.AllocationConfiguration()
 
-	normalisedIPs, err := h.Manager.ReconfigureAllocations(
-		request.IPs,
-		request.PortStart,
-		request.PortEnd,
+	normalisedAllocations, err := h.Manager.ReconfigureAllocations(
+		request.Allocations,
 	)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusConflict)
@@ -39,21 +36,13 @@ func (h *Handler) UpdateAllocationConfiguration(w http.ResponseWriter, r *http.R
 	oldConfig := h.Config
 
 	h.Config.Allocations = config.AllocationConfig{
-		IP:        normalisedIPs[0],
-		IPs:       normalisedIPs,
-		PortStart: request.PortStart,
-		PortEnd:   request.PortEnd,
+		Entries: normalisedAllocations,
 	}
 
 	if err := config.Save(h.Config); err != nil {
 		h.Config = oldConfig
 
-		_, rollbackErr := h.Manager.ReconfigureAllocations(
-			oldIPs,
-			oldPortStart,
-			oldPortEnd,
-		)
-		if rollbackErr != nil {
+		if _, rollbackErr := h.Manager.ReconfigureAllocations(oldAllocations); rollbackErr != nil {
 			http.Error(
 				w,
 				"failed to save worker configuration and failed to restore the previous live allocation configuration",
@@ -71,9 +60,7 @@ func (h *Handler) UpdateAllocationConfiguration(w http.ResponseWriter, r *http.R
 	}
 
 	writeJSON(w, map[string]any{
-		"message":    "allocation configuration updated",
-		"ips":        normalisedIPs,
-		"port_start": request.PortStart,
-		"port_end":   request.PortEnd,
+		"message":     "allocation configuration updated",
+		"allocations": normalisedAllocations,
 	})
 }
