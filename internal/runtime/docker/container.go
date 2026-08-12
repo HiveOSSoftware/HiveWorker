@@ -91,11 +91,7 @@ func (r *DockerRuntime) Start(cell hiveruntime.RuntimeCell, onOutput func(line s
 					},
 				},
 			},
-			Resources: container.Resources{
-				Memory:   int64(cell.Limits.MemoryMB) * 1024 * 1024,
-				NanoCPUs: int64(cell.Limits.CPUPercent) * 10_000_000,
-				// Disk:     int64(cell.Limits.DiskMB) * 1024 * 1024, // Uncomment and implement if Docker supports disk limits
-			},
+			Resources: dockerResources(cell.Limits),
 		},
 		&dockernetwork.NetworkingConfig{
 			EndpointsConfig: map[string]*dockernetwork.EndpointSettings{
@@ -313,6 +309,54 @@ func (r *DockerRuntime) Recover(cellIDs []string, onOutput func(cellID string, l
 	}
 
 	return nil
+}
+
+func dockerResources(limits hiveruntime.Limits) container.Resources {
+	resources := container.Resources{
+		OomKillDisable: boolPointer(!limits.OOMKiller),
+	}
+
+	if limits.MemoryMB > 0 {
+		resources.Memory = int64(limits.MemoryMB) * 1024 * 1024
+	}
+
+	if limits.CPUPercent > 0 {
+		resources.NanoCPUs = int64(limits.CPUPercent) * 10_000_000
+	}
+
+	if limits.CPUPinning != "" {
+		resources.CpusetCpus = limits.CPUPinning
+	}
+
+	if limits.IOWeight > 0 {
+		ioWeight := limits.IOWeight
+
+		if ioWeight < 10 {
+			ioWeight = 10
+		}
+
+		if ioWeight > 1000 {
+			ioWeight = 1000
+		}
+
+		resources.BlkioWeight = uint16(ioWeight)
+	}
+
+	if limits.MemoryMB > 0 {
+		memoryBytes := int64(limits.MemoryMB) * 1024 * 1024
+
+		if limits.SwapMB > 0 {
+			resources.MemorySwap = memoryBytes + int64(limits.SwapMB)*1024*1024
+		} else {
+			resources.MemorySwap = memoryBytes
+		}
+	}
+
+	return resources
+}
+
+func boolPointer(value bool) *bool {
+	return &value
 }
 
 func shellCommand(command string) []string {

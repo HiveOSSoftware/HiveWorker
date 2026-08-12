@@ -40,7 +40,12 @@ type RecoverableRuntime interface {
 }
 
 type Limits struct {
-	MemoryMB   int `json:"memory_mb"`
-	CPUPercent int `json:"cpu_percent"`
-	DiskMB     int `json:"disk_mb"`
+	MemoryMB         int    `json:"memory_mb"`
+	OverheadMemoryMB int    `json:"overhead_memory_mb"`
+	SwapMB           int    `json:"swap_mb"`
+	CPUPercent       int    `json:"cpu_percent"`
+	CPUPinning       string `json:"cpu_pinning,omitempty"`
+	DiskMB           int    `json:"disk_mb"`
+	IOWeight         int    `json:"io_weight"`
+	OOMKiller        bool   `json:"oom_killer"`
 }
