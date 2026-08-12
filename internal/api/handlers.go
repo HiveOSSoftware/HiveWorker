@@ -88,13 +88,16 @@ type RconRequest struct {
 }
 
 type ImporterRequest struct {
-	Protocol   string         `json:"protocol"`
-	Host       string         `json:"host"`
-	Port       int            `json:"port"`
-	Username   string         `json:"username"`
-	Password   string         `json:"password"`
-	RemotePath string         `json:"remote_path"`
-	Options    map[string]any `json:"options"`
+	Protocol             string         `json:"protocol"`
+	Host                 string         `json:"host"`
+	Port                 int            `json:"port"`
+	Username             string         `json:"username"`
+	AuthType             string         `json:"auth_type"`
+	Password             string         `json:"password"`
+	PrivateKey           string         `json:"private_key"`
+	PrivateKeyPassphrase string         `json:"private_key_passphrase"`
+	RemotePath           string         `json:"remote_path"`
+	Options              map[string]any `json:"options"`
 }
 
 type ImportProgress struct {
@@ -1702,11 +1705,14 @@ func (h *Handler) TestImporter(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := importer.TestSFTP(importer.SFTPConfig{
-		Host:       request.Host,
-		Port:       request.Port,
-		Username:   request.Username,
-		Password:   request.Password,
-		RemotePath: request.RemotePath,
+		Host:                 request.Host,
+		Port:                 request.Port,
+		Username:             request.Username,
+		AuthType:             request.AuthType,
+		Password:             request.Password,
+		PrivateKey:           request.PrivateKey,
+		PrivateKeyPassphrase: request.PrivateKeyPassphrase,
+		RemotePath:           request.RemotePath,
 	}); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -1866,12 +1872,15 @@ func (h *Handler) StartImporter(w http.ResponseWriter, r *http.Request) {
 		}
 
 		err := importer.ImportSFTP(importer.SFTPConfig{
-			Host:       request.Host,
-			Port:       request.Port,
-			Username:   request.Username,
-			Password:   request.Password,
-			RemotePath: request.RemotePath,
-			LocalPath:  gameServer.Dir,
+			Host:                 request.Host,
+			Port:                 request.Port,
+			Username:             request.Username,
+			AuthType:             request.AuthType,
+			Password:             request.Password,
+			PrivateKey:           request.PrivateKey,
+			PrivateKeyPassphrase: request.PrivateKeyPassphrase,
+			RemotePath:           request.RemotePath,
+			LocalPath:            gameServer.Dir,
 			Options: importer.Options{
 				ImportWorlds:     request.Options["importWorlds"] == true,
 				ImportPlugins:    request.Options["importPlugins"] == true,

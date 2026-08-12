@@ -1,14 +1,13 @@
 package importer
 
 import (
-	"archive/tar"
-	"compress/gzip"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
+	"path"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -26,280 +25,405 @@ type Options struct {
 }
 
 type SFTPConfig struct {
-	Host       string
-	Port       int
-	Username   string
-	Password   string
-	RemotePath string
-	LocalPath  string
-	Options    Options
+	Host                 string
+	Port                 int
+	Username             string
+	AuthType             string
+	Password             string
+	PrivateKey           string
+	PrivateKeyPassphrase string
+	RemotePath           string
+	LocalPath            string
+	Options              Options
 }
 
 func TestSFTP(cfg SFTPConfig) error {
-	sshClient, sftpClient, err := connectSFTP(cfg)
+	sshClient, client, err := connectSFTP(cfg)
 	if err != nil {
 		return err
 	}
 	defer sshClient.Close()
-	defer sftpClient.Close()
+	defer client.Close()
 
-	remotePath := normalRemotePath(cfg.RemotePath)
+	remotePath := normaliseRemotePath(cfg.RemotePath)
 
-	_, err = sftpClient.ReadDir(remotePath)
-	return err
+	info, err := client.Stat(remotePath)
+	if err != nil {
+		return fmt.Errorf("unable to access remote path %s: %w", remotePath, err)
+	}
+
+	if !info.IsDir() {
+		return fmt.Errorf("remote path %s is not a directory", remotePath)
+	}
+
+	return nil
 }
 
-func ImportSFTP(cfg SFTPConfig, progress func(stage string, percent int, message string)) error {
-	sshClient, sftpClient, err := connectSFTP(cfg)
+func ImportSFTP(
+	cfg SFTPConfig,
+	progress func(stage string, percent int, message string),
+) error {
+	if strings.TrimSpace(cfg.LocalPath) == "" {
+		return errors.New("local import path is required")
+	}
+
+	sshClient, client, err := connectSFTP(cfg)
 	if err != nil {
 		return err
 	}
 	defer sshClient.Close()
-	defer sftpClient.Close()
+	defer client.Close()
 
-	remotePath := normalRemotePath(cfg.RemotePath)
+	remoteRoot := normaliseRemotePath(cfg.RemotePath)
 
-	progress("Preparing", 5, "Preparing remote archive...")
+	if progress != nil {
+		progress("Scanning", 15, "Scanning source server files...")
+	}
 
-	remoteArchive := fmt.Sprintf("/tmp/hivepanel-import-%d.tar.gz", time.Now().UnixNano())
-	localArchive := filepath.Join(os.TempDir(), filepath.Base(remoteArchive))
-
-	defer os.Remove(localArchive)
+	files, err := collectRemoteFiles(client, remoteRoot, cfg.Options)
+	if err != nil {
+		return err
+	}
 
 	if cfg.Options.WipeBeforeImport {
-		progress("Preparing", 10, "Wiping current server files...")
-		if err := wipeDirectory(cfg.LocalPath); err != nil {
+		if progress != nil {
+			progress("Preparing", 20, "Removing existing destination files...")
+		}
+
+		if err := wipeLocalDirectory(cfg.LocalPath); err != nil {
 			return err
 		}
 	}
 
-	if err := createRemoteArchive(sshClient, remotePath, remoteArchive, cfg.Options); err != nil {
+	if err := os.MkdirAll(cfg.LocalPath, 0755); err != nil {
 		return err
 	}
 
-	defer func() {
-		_ = runSSHCommand(sshClient, "rm -f "+shellQuote(remoteArchive))
-	}()
-
-	progress("Downloading", 45, "Downloading remote archive...")
-
-	if err := downloadRemoteArchive(sftpClient, remoteArchive, localArchive); err != nil {
-		return err
+	totalBytes := int64(0)
+	for _, file := range files {
+		totalBytes += file.Size
 	}
 
-	progress("Extracting", 75, "Extracting archive into server files...")
+	var copiedBytes int64
 
-	if err := extractTarGz(localArchive, cfg.LocalPath); err != nil {
-		return err
+	for index, file := range files {
+		relative := strings.TrimPrefix(file.Path, remoteRoot)
+		relative = strings.TrimPrefix(relative, "/")
+
+		localPath := filepath.Join(
+			cfg.LocalPath,
+			filepath.FromSlash(relative),
+		)
+
+		if err := os.MkdirAll(filepath.Dir(localPath), 0755); err != nil {
+			return err
+		}
+
+		if progress != nil {
+			percent := transferPercent(
+				index,
+				len(files),
+				copiedBytes,
+				totalBytes,
+			)
+
+			progress(
+				"Transferring",
+				percent,
+				"Copying "+relative,
+			)
+		}
+
+		copied, err := copyRemoteFile(
+			client,
+			file.Path,
+			localPath,
+			file.Mode,
+		)
+		if err != nil {
+			return fmt.Errorf("copy %s: %w", relative, err)
+		}
+
+		copiedBytes += copied
 	}
 
-	progress("Complete", 100, "Import completed successfully.")
+	if progress != nil {
+		progress("Finalizing", 92, "Finalizing imported files...")
+	}
+
 	return nil
+}
+
+type remoteFile struct {
+	Path string
+	Size int64
+	Mode os.FileMode
 }
 
 func connectSFTP(cfg SFTPConfig) (*ssh.Client, *sftp.Client, error) {
+	host := strings.TrimSpace(cfg.Host)
+	username := strings.TrimSpace(cfg.Username)
+
+	if host == "" {
+		return nil, nil, errors.New("SFTP host is required")
+	}
+
+	if username == "" {
+		return nil, nil, errors.New("SFTP username is required")
+	}
+
+	port := cfg.Port
+	if port <= 0 {
+		port = 22
+	}
+
+	authMethods, err := sshAuthMethods(cfg)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	sshConfig := &ssh.ClientConfig{
-		User: cfg.Username,
-		Auth: []ssh.AuthMethod{
-			ssh.Password(cfg.Password),
-		},
+		User:            username,
+		Auth:            authMethods,
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-		Timeout:         15 * time.Second,
+		Timeout:         10 * time.Second,
 	}
 
-	address := cfg.Host + ":" + strconv.Itoa(cfg.Port)
-
-	sshClient, err := ssh.Dial("tcp", address, sshConfig)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	sftpClient, err := sftp.NewClient(sshClient)
-	if err != nil {
-		_ = sshClient.Close()
-		return nil, nil, err
-	}
-
-	return sshClient, sftpClient, nil
-}
-
-func createRemoteArchive(client *ssh.Client, remotePath string, remoteArchive string, options Options) error {
-	includes := selectedIncludes(options)
-	if len(includes) == 0 {
-		return errors.New("nothing selected to import")
-	}
-
-	args := make([]string, 0, len(includes))
-	for _, include := range includes {
-		args = append(args, shellQuote(include))
-	}
-
-	command := fmt.Sprintf(
-		"cd %s && tar -czf %s --ignore-failed-read %s",
-		shellQuote(remotePath),
-		shellQuote(remoteArchive),
-		strings.Join(args, " "),
+	address := net.JoinHostPort(
+		host,
+		fmt.Sprintf("%d", port),
 	)
 
-	return runSSHCommand(client, command)
+	sshClient, err := ssh.Dial(
+		"tcp",
+		address,
+		sshConfig,
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("SFTP SSH connection failed: %w", err)
+	}
+
+	client, err := sftp.NewClient(sshClient)
+	if err != nil {
+		_ = sshClient.Close()
+		return nil, nil, fmt.Errorf("SFTP client initialization failed: %w", err)
+	}
+
+	return sshClient, client, nil
 }
 
-func selectedIncludes(options Options) []string {
-	includes := make([]string, 0)
+func sshAuthMethods(cfg SFTPConfig) ([]ssh.AuthMethod, error) {
+	authType := strings.TrimSpace(
+		strings.ToLower(cfg.AuthType),
+	)
 
-	if options.ImportWorlds {
-		includes = append(includes, "world", "world_nether", "world_the_end")
+	if authType == "" {
+		if strings.TrimSpace(cfg.PrivateKey) != "" {
+			authType = "private_key"
+		} else {
+			authType = "password"
+		}
 	}
 
-	if options.ImportPlugins {
-		includes = append(includes, "plugins")
-	}
+	switch authType {
+	case "password":
+		if cfg.Password == "" {
+			return nil, errors.New("SFTP password is required")
+		}
 
-	if options.ImportMods {
-		includes = append(includes, "mods")
-	}
+		return []ssh.AuthMethod{
+			ssh.Password(cfg.Password),
+		}, nil
 
-	if options.ImportConfigs {
-		includes = append(includes,
-			"server.properties",
-			"bukkit.yml",
-			"spigot.yml",
-			"paper.yml",
-			"purpur.yml",
-			"config",
+	case "private_key":
+		privateKey := []byte(cfg.PrivateKey)
+
+		if len(strings.TrimSpace(cfg.PrivateKey)) == 0 {
+			return nil, errors.New("SFTP private key is required")
+		}
+
+		var signer ssh.Signer
+		var err error
+
+		if cfg.PrivateKeyPassphrase != "" {
+			signer, err = ssh.ParsePrivateKeyWithPassphrase(
+				privateKey,
+				[]byte(cfg.PrivateKeyPassphrase),
+			)
+		} else {
+			signer, err = ssh.ParsePrivateKey(privateKey)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("invalid SFTP private key: %w", err)
+		}
+
+		return []ssh.AuthMethod{
+			ssh.PublicKeys(signer),
+		}, nil
+
+	default:
+		return nil, fmt.Errorf("unsupported SFTP auth type: %s", authType)
+	}
+}
+
+func collectRemoteFiles(
+	client *sftp.Client,
+	remoteRoot string,
+	options Options,
+) ([]remoteFile, error) {
+	result := []remoteFile{}
+
+	walker := client.Walk(remoteRoot)
+
+	for walker.Step() {
+		if err := walker.Err(); err != nil {
+			return nil, err
+		}
+
+		info := walker.Stat()
+		if info == nil || info.IsDir() {
+			continue
+		}
+
+		remotePath := walker.Path()
+
+		relative := strings.TrimPrefix(
+			remotePath,
+			remoteRoot,
 		)
+		relative = strings.TrimPrefix(relative, "/")
+
+		if !shouldImport(relative, options) {
+			continue
+		}
+
+		result = append(result, remoteFile{
+			Path: remotePath,
+			Size: info.Size(),
+			Mode: info.Mode(),
+		})
 	}
 
-	if options.ImportServerJar {
-		includes = append(includes, "*.jar")
-	}
-
-	return includes
+	return result, nil
 }
 
-func runSSHCommand(client *ssh.Client, command string) error {
-	session, err := client.NewSession()
-	if err != nil {
-		return err
-	}
-	defer session.Close()
+func shouldImport(relative string, options Options) bool {
+	clean := strings.TrimPrefix(
+		path.Clean("/"+relative),
+		"/",
+	)
 
-	output, err := session.CombinedOutput(command)
-	if err != nil {
-		return fmt.Errorf("%s: %s", err.Error(), strings.TrimSpace(string(output)))
+	if clean == "." || clean == "" {
+		return false
 	}
 
-	return nil
+	first := strings.ToLower(
+		strings.Split(clean, "/")[0],
+	)
+
+	if first == "plugins" && !options.ImportPlugins {
+		return false
+	}
+
+	if first == "mods" && !options.ImportMods {
+		return false
+	}
+
+	if isWorldPath(first) && !options.ImportWorlds {
+		return false
+	}
+
+	if isConfigPath(clean) && !options.ImportConfigs {
+		return false
+	}
+
+	if isServerJar(clean) && !options.ImportServerJar {
+		return false
+	}
+
+	return true
 }
 
-func downloadRemoteArchive(client *sftp.Client, remoteArchive string, localArchive string) error {
-	source, err := client.Open(remoteArchive)
+func isWorldPath(first string) bool {
+	return first == "world" ||
+		strings.HasPrefix(first, "world_") ||
+		first == "worlds"
+}
+
+func isConfigPath(relative string) bool {
+	lower := strings.ToLower(relative)
+
+	if strings.HasPrefix(lower, "config/") {
+		return true
+	}
+
+	base := strings.ToLower(path.Base(lower))
+
+	return strings.HasSuffix(base, ".yml") ||
+		strings.HasSuffix(base, ".yaml") ||
+		strings.HasSuffix(base, ".json") ||
+		strings.HasSuffix(base, ".properties") ||
+		strings.HasSuffix(base, ".toml") ||
+		strings.HasSuffix(base, ".conf") ||
+		strings.HasSuffix(base, ".cfg") ||
+		strings.HasSuffix(base, ".ini")
+}
+
+func isServerJar(relative string) bool {
+	lower := strings.ToLower(
+		path.Base(relative),
+	)
+
+	return lower == "server.jar" ||
+		strings.HasSuffix(lower, ".jar")
+}
+
+func copyRemoteFile(
+	client *sftp.Client,
+	remotePath string,
+	localPath string,
+	mode os.FileMode,
+) (int64, error) {
+	source, err := client.Open(remotePath)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer source.Close()
 
-	target, err := os.OpenFile(localArchive, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
+	destination, err := os.OpenFile(
+		localPath,
+		os.O_CREATE|os.O_TRUNC|os.O_WRONLY,
+		mode.Perm(),
+	)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	defer target.Close()
+	defer destination.Close()
 
-	_, err = io.Copy(target, source)
-	return err
+	return io.Copy(destination, source)
 }
 
-func extractTarGz(archivePath string, targetDir string) error {
-	file, err := os.Open(archivePath)
+func wipeLocalDirectory(directory string) error {
+	entries, err := os.ReadDir(directory)
 	if err != nil {
-		return err
-	}
-	defer file.Close()
-
-	gzipReader, err := gzip.NewReader(file)
-	if err != nil {
-		return err
-	}
-	defer gzipReader.Close()
-
-	tarReader := tar.NewReader(gzipReader)
-
-	baseAbs, err := filepath.Abs(targetDir)
-	if err != nil {
-		return err
-	}
-
-	for {
-		header, err := tarReader.Next()
-
-		if errors.Is(err, io.EOF) {
-			break
+		if os.IsNotExist(err) {
+			return nil
 		}
 
-		if err != nil {
-			return err
-		}
-
-		cleanName := filepath.Clean(header.Name)
-
-		if cleanName == "." || strings.HasPrefix(cleanName, "..") || filepath.IsAbs(cleanName) {
-			continue
-		}
-
-		targetPath := filepath.Join(targetDir, cleanName)
-		targetAbs, err := filepath.Abs(targetPath)
-		if err != nil {
-			return err
-		}
-
-		if !strings.HasPrefix(targetAbs, baseAbs) {
-			continue
-		}
-
-		switch header.Typeflag {
-		case tar.TypeDir:
-			if err := os.MkdirAll(targetPath, os.FileMode(header.Mode)); err != nil {
-				return err
-			}
-
-		case tar.TypeReg:
-			if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
-				return err
-			}
-
-			target, err := os.OpenFile(targetPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, os.FileMode(header.Mode))
-			if err != nil {
-				return err
-			}
-
-			if _, err := io.Copy(target, tarReader); err != nil {
-				_ = target.Close()
-				return err
-			}
-
-			if err := target.Close(); err != nil {
-				return err
-			}
-		}
-	}
-
-	return nil
-}
-
-func wipeDirectory(path string) error {
-	entries, err := os.ReadDir(path)
-	if err != nil {
 		return err
 	}
 
 	for _, entry := range entries {
-		name := entry.Name()
-
-		if name == ".hivepanel" || name == ".recycle_bin" {
+		if entry.Name() == ".hivepanel" {
 			continue
 		}
 
-		if err := os.RemoveAll(filepath.Join(path, name)); err != nil {
+		if err := os.RemoveAll(
+			filepath.Join(
+				directory,
+				entry.Name(),
+			),
+		); err != nil {
 			return err
 		}
 	}
@@ -307,14 +431,35 @@ func wipeDirectory(path string) error {
 	return nil
 }
 
-func normalRemotePath(path string) string {
-	if strings.TrimSpace(path) == "" {
+func normaliseRemotePath(remotePath string) string {
+	remotePath = strings.TrimSpace(remotePath)
+
+	if remotePath == "" {
 		return "."
 	}
 
-	return path
+	return path.Clean(remotePath)
 }
 
-func shellQuote(value string) string {
-	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
+func transferPercent(
+	index int,
+	totalFiles int,
+	copiedBytes int64,
+	totalBytes int64,
+) int {
+	if totalBytes > 0 {
+		ratio := float64(copiedBytes) /
+			float64(totalBytes)
+
+		return 25 + int(ratio*65)
+	}
+
+	if totalFiles > 0 {
+		ratio := float64(index) /
+			float64(totalFiles)
+
+		return 25 + int(ratio*65)
+	}
+
+	return 90
 }
