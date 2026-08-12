@@ -11,6 +11,8 @@ func (m *Manager) UpdateDefinition(id string, request UpdateCellDefinitionReques
 	id = strings.TrimSpace(id)
 	request.Name = strings.TrimSpace(request.Name)
 	request.Comb = strings.TrimSpace(request.Comb)
+	request.Docker.Image = strings.TrimSpace(request.Docker.Image)
+	request.Startup.Command = strings.TrimSpace(request.Startup.Command)
 
 	if id == "" {
 		return nil, errors.New("cell id is required")
@@ -76,6 +78,9 @@ func (m *Manager) UpdateDefinition(id string, request UpdateCellDefinitionReques
 	gameCell.Allocation = request.Allocation
 	gameCell.AdditionalAllocations = additionalAllocations
 	gameCell.Limits = request.Limits
+	gameCell.FeatureLimits = request.FeatureLimits
+	gameCell.Docker = request.Docker
+	gameCell.Startup = request.Startup
 
 	if err := m.save(gameCell); err != nil {
 		m.allocManager.ReplaceReservations(

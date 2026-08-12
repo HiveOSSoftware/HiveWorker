@@ -20,6 +20,8 @@ func (m *Manager) Create(request CreateCellRequest) (*Cell, error) {
 	request.ID = strings.TrimSpace(request.ID)
 	request.Name = strings.TrimSpace(request.Name)
 	request.Comb = strings.TrimSpace(request.Comb)
+	request.Docker.Image = strings.TrimSpace(request.Docker.Image)
+	request.Startup.Command = strings.TrimSpace(request.Startup.Command)
 
 	if request.Name == "" {
 		return nil, errors.New("name is required")
@@ -96,32 +98,6 @@ func (m *Manager) Create(request CreateCellRequest) (*Cell, error) {
 		limits.CPUPercent = 100
 	}
 
-	if limits.IOWeight <= 0 {
-		limits.IOWeight = 500
-	}
-
-	if limits.IOWeight < 10 {
-		limits.IOWeight = 10
-	}
-
-	if limits.IOWeight > 1000 {
-		limits.IOWeight = 1000
-	}
-
-	if limits.OverheadMemoryMB < 0 {
-		limits.OverheadMemoryMB = 0
-	}
-
-	if limits.SwapMB < 0 {
-		limits.SwapMB = 0
-	}
-
-	if limits.DiskMB < 0 {
-		limits.DiskMB = 0
-	}
-
-	limits.CPUPinning = strings.TrimSpace(limits.CPUPinning)
-
 	gameCell := &Cell{
 		ID:                    id,
 		Name:                  request.Name,
@@ -132,6 +108,9 @@ func (m *Manager) Create(request CreateCellRequest) (*Cell, error) {
 		Allocation:            primaryAllocation,
 		AdditionalAllocations: additionalAllocations,
 		Limits:                limits,
+		FeatureLimits:         request.FeatureLimits,
+		Docker:                request.Docker,
+		Startup:               request.Startup,
 		CreatedAt:             time.Now().UTC().Format(time.RFC3339),
 		Status:                "offline",
 

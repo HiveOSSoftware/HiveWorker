@@ -8,6 +8,21 @@ import (
 	"sync"
 )
 
+type FeatureLimits struct {
+	DatabaseLimit   *int `json:"database_limit,omitempty"`
+	AllocationLimit *int `json:"allocation_limit,omitempty"`
+	BackupLimit     *int `json:"backup_limit,omitempty"`
+	BackupStorageMB *int `json:"backup_storage_mb,omitempty"`
+}
+
+type DockerConfig struct {
+	Image string `json:"image,omitempty"`
+}
+
+type StartupConfig struct {
+	Command string `json:"command,omitempty"`
+}
+
 type Cell struct {
 	ID        string `json:"id"`
 	Name      string `json:"name"`
@@ -21,6 +36,9 @@ type Cell struct {
 	Allocation            allocation.Allocation   `json:"allocation"`
 	AdditionalAllocations []allocation.Allocation `json:"additional_allocations"`
 	Limits                hiveruntime.Limits      `json:"limits"`
+	FeatureLimits         FeatureLimits           `json:"feature_limits"`
+	Docker                DockerConfig            `json:"docker"`
+	Startup               StartupConfig           `json:"startup"`
 
 	console     []string
 	subscribers map[chan string]bool
@@ -35,6 +53,9 @@ type CreateCellRequest struct {
 	CombData              map[string]any          `json:"comb_data,omitempty"`
 	Variables             map[string]string       `json:"variables"`
 	Limits                hiveruntime.Limits      `json:"limits"`
+	FeatureLimits         FeatureLimits           `json:"feature_limits"`
+	Docker                DockerConfig            `json:"docker"`
+	Startup               StartupConfig           `json:"startup"`
 	Allocation            allocation.Allocation   `json:"allocation"`
 	AdditionalAllocations []allocation.Allocation `json:"additional_allocations,omitempty"`
 }
@@ -47,6 +68,9 @@ type UpdateCellDefinitionRequest struct {
 	Allocation            allocation.Allocation   `json:"allocation"`
 	AdditionalAllocations []allocation.Allocation `json:"additional_allocations"`
 	Limits                hiveruntime.Limits      `json:"limits"`
+	FeatureLimits         FeatureLimits           `json:"feature_limits"`
+	Docker                DockerConfig            `json:"docker"`
+	Startup               StartupConfig           `json:"startup"`
 }
 
 type CellStats struct {

@@ -45,7 +45,17 @@ func (m *Manager) Start(id string) error {
 	variables["allocation.ip"] = cellCopy.Allocation.IP
 	variables["allocation.port"] = fmt.Sprint(cellCopy.Allocation.Port)
 
-	command := renderTemplate(selectedComb.Startup, variables)
+	startupCommand := selectedComb.Startup
+	if cellCopy.Startup.Command != "" {
+		startupCommand = cellCopy.Startup.Command
+	}
+
+	image := selectedComb.Image
+	if cellCopy.Docker.Image != "" {
+		image = cellCopy.Docker.Image
+	}
+
+	command := renderTemplate(startupCommand, variables)
 
 	_ = os.MkdirAll(cellCopy.Dir, 0755)
 
@@ -55,7 +65,7 @@ func (m *Manager) Start(id string) error {
 		ID:             cellCopy.ID,
 		Command:        command,
 		InstanceDir:    cellCopy.Dir,
-		Image:          selectedComb.Image,
+		Image:          image,
 		WorkingDir:     selectedComb.WorkingDir,
 		Environment:    selectedComb.Environment,
 		AllocationIP:   cellCopy.Allocation.IP,
