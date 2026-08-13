@@ -1699,28 +1699,45 @@ func (h *Handler) TestImporter(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if request.Protocol != "sftp" {
-		http.Error(w, "only sftp is supported right now", http.StatusBadRequest)
-		return
-	}
+	protocol := strings.ToLower(strings.TrimSpace(request.Protocol))
 
-	if err := importer.TestSFTP(importer.SFTPConfig{
-		Host:                 request.Host,
-		Port:                 request.Port,
-		Username:             request.Username,
-		AuthType:             request.AuthType,
-		Password:             request.Password,
-		PrivateKey:           request.PrivateKey,
-		PrivateKeyPassphrase: request.PrivateKeyPassphrase,
-		RemotePath:           request.RemotePath,
-	}); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	switch protocol {
+	case "local":
+		if err := importer.TestLocal(importer.LocalConfig{
+			SourcePath: request.RemotePath,
+		}); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+	case "sftp":
+		if err := importer.TestSFTP(importer.SFTPConfig{
+			Host:                 request.Host,
+			Port:                 request.Port,
+			Username:             request.Username,
+			AuthType:             request.AuthType,
+			Password:             request.Password,
+			PrivateKey:           request.PrivateKey,
+			PrivateKeyPassphrase: request.PrivateKeyPassphrase,
+			RemotePath:           request.RemotePath,
+		}); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+	default:
+		http.Error(
+			w,
+			"only sftp and local import protocols are supported",
+			http.StatusBadRequest,
+		)
 		return
 	}
 
 	writeJSON(w, map[string]any{
-		"message": "connection successful",
-		"id":      id,
+		"message":  "source access successful",
+		"id":       id,
+		"protocol": protocol,
 	})
 }
 
@@ -1822,9 +1839,25 @@ func (h *Handler) StartImporter(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if request.Protocol != "sftp" {
-		http.Error(w, "only sftp is supported right now", http.StatusBadRequest)
+	protocol := strings.ToLower(strings.TrimSpace(request.Protocol))
+
+	if protocol != "sftp" && protocol != "local" {
+		http.Error(
+			w,
+			"only sftp and local import protocols are supported",
+			http.StatusBadRequest,
+		)
 		return
+	}
+
+	if protocol == "local" {
+		if err := importer.TestLocal(importer.LocalConfig{
+			SourcePath: request.RemotePath,
+			LocalPath:  gameServer.Dir,
+		}); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 	}
 
 	wasRunning := gameServer.Status == "running"
@@ -1833,7 +1866,7 @@ func (h *Handler) StartImporter(w http.ResponseWriter, r *http.Request) {
 		id,
 		"importing",
 		"Importing Server",
-		"This server is locked while files are imported from another host.",
+		"This server is locked while files are imported from the migration source.",
 	); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -1871,32 +1904,46 @@ func (h *Handler) StartImporter(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		err := importer.ImportSFTP(importer.SFTPConfig{
-			Host:                 request.Host,
-			Port:                 request.Port,
-			Username:             request.Username,
-			AuthType:             request.AuthType,
-			Password:             request.Password,
-			PrivateKey:           request.PrivateKey,
-			PrivateKeyPassphrase: request.PrivateKeyPassphrase,
-			RemotePath:           request.RemotePath,
-			LocalPath:            gameServer.Dir,
-			Options: importer.Options{
-				ImportWorlds:     request.Options["importWorlds"] == true,
-				ImportPlugins:    request.Options["importPlugins"] == true,
-				ImportConfigs:    request.Options["importConfigs"] == true,
-				ImportMods:       request.Options["importMods"] == true,
-				ImportServerJar:  request.Options["importServerJar"] == true,
-				WipeBeforeImport: request.Options["wipeBeforeImport"] == true,
-			},
-		}, func(stage string, percent int, message string) {
+		options := importer.Options{
+			ImportWorlds:     request.Options["importWorlds"] == true,
+			ImportPlugins:    request.Options["importPlugins"] == true,
+			ImportConfigs:    request.Options["importConfigs"] == true,
+			ImportMods:       request.Options["importMods"] == true,
+			ImportServerJar:  request.Options["importServerJar"] == true,
+			WipeBeforeImport: request.Options["wipeBeforeImport"] == true,
+		}
+
+		progress := func(stage string, percent int, message string) {
 			setImportProgressForCell(gameServer, ImportProgress{
 				Running: true,
 				Stage:   stage,
 				Percent: percent,
 				Message: message,
 			})
-		})
+		}
+
+		var err error
+
+		if protocol == "local" {
+			err = importer.ImportLocal(importer.LocalConfig{
+				SourcePath: request.RemotePath,
+				LocalPath:  gameServer.Dir,
+				Options:    options,
+			}, progress)
+		} else {
+			err = importer.ImportSFTP(importer.SFTPConfig{
+				Host:                 request.Host,
+				Port:                 request.Port,
+				Username:             request.Username,
+				AuthType:             request.AuthType,
+				Password:             request.Password,
+				PrivateKey:           request.PrivateKey,
+				PrivateKeyPassphrase: request.PrivateKeyPassphrase,
+				RemotePath:           request.RemotePath,
+				LocalPath:            gameServer.Dir,
+				Options:              options,
+			}, progress)
+		}
 
 		if err != nil {
 			setImportProgressForCell(gameServer, ImportProgress{
@@ -1938,9 +1985,10 @@ func (h *Handler) StartImporter(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	writeJSON(w, map[string]any{
-		"message": "import job started",
-		"id":      id,
-		"status":  "running",
+		"message":  "import job started",
+		"id":       id,
+		"status":   "running",
+		"protocol": protocol,
 	})
 }
 
