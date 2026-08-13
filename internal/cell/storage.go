@@ -94,10 +94,6 @@ func (m *Manager) Create(request CreateCellRequest) (*Cell, error) {
 		limits.MemoryMB = 1024
 	}
 
-	if limits.CPUPercent <= 0 {
-		limits.CPUPercent = 100
-	}
-
 	gameCell := &Cell{
 		ID:                    id,
 		Name:                  request.Name,
