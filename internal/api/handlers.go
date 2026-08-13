@@ -20,6 +20,7 @@ import (
 	"hivepanel-worker/internal/config"
 	"hivepanel-worker/internal/files"
 	"hivepanel-worker/internal/importer"
+	"hivepanel-worker/internal/migrationdetect"
 	"hivepanel-worker/internal/node"
 	"hivepanel-worker/internal/players"
 )
@@ -100,6 +101,11 @@ type ImporterRequest struct {
 	Options              map[string]any `json:"options"`
 }
 
+type MigrationSourceDetectionRequest struct {
+	UUIDs          []string `json:"uuids"`
+	ConfiguredPath string   `json:"configured_path"`
+}
+
 type ImportProgress struct {
 	Running bool   `json:"running"`
 	Stage   string `json:"stage"`
@@ -136,6 +142,29 @@ func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
 		"status": "ok",
 		"name":   "HivePanel Daemon",
 	})
+}
+
+func (h *Handler) DetectMigrationSource(w http.ResponseWriter, r *http.Request) {
+	var request MigrationSourceDetectionRequest
+
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		http.Error(w, "invalid json body", http.StatusBadRequest)
+		return
+	}
+
+	if len(request.UUIDs) == 0 {
+		http.Error(w, "at least one source server uuid is required", http.StatusBadRequest)
+		return
+	}
+
+	result := migrationdetect.Detect(
+		migrationdetect.Request{
+			UUIDs:          request.UUIDs,
+			ConfiguredPath: request.ConfiguredPath,
+		},
+	)
+
+	writeJSON(w, result)
 }
 
 func (h *Handler) NodeStats(w http.ResponseWriter, r *http.Request) {
