@@ -27,18 +27,19 @@ type Candidate struct {
 }
 
 type Result struct {
-	Detected     bool        `json:"detected"`
-	DataPath     string      `json:"data_path,omitempty"`
-	PathTemplate string      `json:"path_template,omitempty"`
-	Source       string      `json:"source,omitempty"`
-	Confidence   string      `json:"confidence,omitempty"`
-	MatchedUUIDs []string    `json:"matched_uuids"`
-	MissingUUIDs []string    `json:"missing_uuids"`
-	TotalBytes   int64       `json:"total_bytes"`
-	FreeBytes    int64       `json:"free_bytes"`
-	EnoughSpace  *bool       `json:"enough_space,omitempty"`
-	Candidates   []Candidate `json:"candidates"`
-	Warnings     []string    `json:"warnings"`
+	Detected     bool         `json:"detected"`
+	DataPath     string       `json:"data_path,omitempty"`
+	PathTemplate string       `json:"path_template,omitempty"`
+	Source       string       `json:"source,omitempty"`
+	Confidence   string       `json:"confidence,omitempty"`
+	MatchedUUIDs []string     `json:"matched_uuids"`
+	MissingUUIDs []string     `json:"missing_uuids"`
+	TotalBytes   int64        `json:"total_bytes"`
+	FreeBytes    int64        `json:"free_bytes"`
+	EnoughSpace  *bool        `json:"enough_space,omitempty"`
+	RuntimeCheck RuntimeCheck `json:"runtime_check"`
+	Candidates   []Candidate  `json:"candidates"`
+	Warnings     []string     `json:"warnings"`
 }
 
 func Detect(request Request) Result {
@@ -56,17 +57,43 @@ func Detect(request Request) Result {
 	}
 
 	sort.SliceStable(results, func(i, j int) bool {
-		if results[i].MatchCount != results[j].MatchCount {
-			return results[i].MatchCount > results[j].MatchCount
+		left := results[i]
+		right := results[j]
+
+		if left.MatchCount != right.MatchCount {
+			return left.MatchCount > right.MatchCount
 		}
 
-		return confidenceScore(results[i].Confidence) >
-			confidenceScore(results[j].Confidence)
+		leftHasData := left.TotalBytes > 0
+		rightHasData := right.TotalBytes > 0
+
+		if leftHasData != rightHasData {
+			return leftHasData
+		}
+
+		leftSourceScore := sourceEvidenceScore(left.Source)
+		rightSourceScore := sourceEvidenceScore(right.Source)
+
+		if leftSourceScore != rightSourceScore {
+			return leftSourceScore > rightSourceScore
+		}
+
+		if left.TotalBytes != right.TotalBytes {
+			return left.TotalBytes > right.TotalBytes
+		}
+
+		if left.Readable != right.Readable {
+			return left.Readable
+		}
+
+		return confidenceScore(left.Confidence) >
+			confidenceScore(right.Confidence)
 	})
 
 	response := Result{
 		MatchedUUIDs: []string{},
 		MissingUUIDs: uuids,
+		RuntimeCheck: inspectSourceRuntime(uuids),
 		Candidates:   results,
 		Warnings:     []string{},
 	}
@@ -100,6 +127,13 @@ func Detect(request Request) Result {
 	response.MissingUUIDs = best.MissingUUIDs
 	response.TotalBytes = best.TotalBytes
 
+	if best.TotalBytes == 0 {
+		response.Warnings = append(
+			response.Warnings,
+			"The selected source root contains the expected UUID directory, but no regular file data was found beneath it.",
+		)
+	}
+
 	freeBytes, err := freeSpace(best.Path)
 	if err == nil {
 		response.FreeBytes = freeBytes
@@ -123,6 +157,24 @@ func Detect(request Request) Result {
 				len(best.MissingUUIDs),
 				len(uuids),
 			),
+		)
+	}
+
+	if response.RuntimeCheck.Available {
+		if response.RuntimeCheck.AllStopped != nil &&
+			!*response.RuntimeCheck.AllStopped {
+			response.Warnings = append(
+				response.Warnings,
+				fmt.Sprintf(
+					"%d active source container(s) matched the selected server UUIDs. Stop them before in-place migration.",
+					response.RuntimeCheck.ActiveCount,
+				),
+			)
+		}
+	} else if response.RuntimeCheck.Error != "" {
+		response.Warnings = append(
+			response.Warnings,
+			"Automatic source-container state verification was unavailable: "+response.RuntimeCheck.Error,
 		)
 	}
 
@@ -497,6 +549,21 @@ func directorySize(root string) int64 {
 
 func leadingWhitespace(value string) int {
 	return len(value) - len(strings.TrimLeft(value, " \t"))
+}
+
+func sourceEvidenceScore(source string) int {
+	switch {
+	case strings.HasPrefix(source, "daemon_config:"):
+		return 4
+	case strings.HasPrefix(source, "systemd_daemon_config:"):
+		return 4
+	case source == "configured_path":
+		return 3
+	case source == "conventional_path":
+		return 1
+	default:
+		return 0
+	}
 }
 
 func confidenceScore(value string) int {
