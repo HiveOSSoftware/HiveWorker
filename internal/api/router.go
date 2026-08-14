@@ -77,6 +77,8 @@ func NewRouter(cfg config.Config, manager *cell.Manager, combManager *comb.Manag
 	mux.Handle("DELETE /cells/{id}/files/permanent", auth.Middleware(cfg, http.HandlerFunc(handler.PermanentDeleteFile)))
 	mux.Handle("POST /cells/{id}/files/file", auth.Middleware(cfg, http.HandlerFunc(handler.CreateFile)))
 	mux.Handle("POST /cells/{id}/files/upload-url", auth.Middleware(cfg, http.HandlerFunc(handler.UploadFromURL)))
+	mux.Handle("POST /cells/{id}/files/archive", auth.Middleware(cfg, http.HandlerFunc(handler.CreateFileArchive)))
+	mux.Handle("POST /cells/{id}/files/extract", auth.Middleware(cfg, http.HandlerFunc(handler.ExtractFileArchive)))
 
 	mux.Handle("GET /cells/{id}/config", auth.Middleware(cfg, http.HandlerFunc(handler.ListConfigFiles)))
 	mux.Handle("GET /cells/{id}/config/read", auth.Middleware(cfg, http.HandlerFunc(handler.ReadConfigFile)))
